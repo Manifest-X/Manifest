@@ -6,6 +6,8 @@
  * Per plain row click: containers rendered / restashed, Alpine effects created, elements
  * added / removed, main-thread task ms. Also: a revealed pane's menus still render promptly,
  * click-to-open latency of a never-rendered menu, and the cost of typing 30 characters.
+ * Then: rows paged in with late-bound ids, a side panel that re-mounts 12 menus on every
+ * select (sync and 400ms async), and closed details keeping their summary label.
  *
  * Run: node tests/e2e/defer-churn.e2e.mjs [--clicks 12] [--throttle 6] [--json] [--assert]
  * DEFER_FILE=/path/to/manifest.defer.js serves another build of the module (before/after runs).
@@ -33,6 +35,7 @@ const ROWS = 40
 const TOOL_MENUS = 40
 const OPTIONS = 130
 const PANE_MENUS = 6
+const PANEL_MENUS = 12
 
 // ---- Fixture ----
 
@@ -40,7 +43,7 @@ const PANE_MENUS = 6
 const options = (key) => `<template x-for="o in opts" :key="o"><li :data-value="o" :data-label="o"><span x-show="o !== ''"><i></i></span><b x-text="o"></b><small x-text="'${key}'"></small><em x-show="false">x</em></li></template>`
 
 function row(i) {
-    return `<tr id="r${i}" x-data="{ id: ${i} }" @click="$store.sel.id = id" :class="$store.sel.id === id && 'selected'">
+    return `<tr id="r${i}" x-data="{ id: ${i} }" @click="$store.sel.pick(id)" :class="$store.sel.id === id && 'selected'">
   <td>Record ${i}</td><td>record${i}@example.com</td>
   <td><button popovertarget="rm${i}">...</button><menu popover id="rm${i}">${options('row')}</menu></td>
 </tr>`
@@ -51,6 +54,10 @@ function buildFixture() {
     const dialogs = Array.from({ length: 4 }, (_, i) => `<dialog id="d${i}"><form method="dialog"><h3>Dialog ${i}</h3><ul>${options('dlg')}</ul><button>OK</button></form></dialog>`).join('')
     const pane = Array.from({ length: PANE_MENUS }, (_, i) => `<button popovertarget="pm${i}">P${i}</button><menu popover id="pm${i}">${options('pane')}</menu>`).join('')
     const rows = Array.from({ length: ROWS }, (_, i) => row(i)).join('\n')
+    // ds4 is lazy: never prewarmed, so one closed details is always stashed
+    const details = Array.from({ length: 5 }, (_, i) => `<details id="ds${i}"${i === 4 ? ' x-defer.lazy' : ''}><summary>Label ${i}</summary><ul>${options('det')}</ul></details>`).join('')
+    const panel = Array.from({ length: PANEL_MENUS }, (_, i) => `<button :popovertarget="'sp' + s + '_${i}'">S${i}</button><menu popover :id="'sp' + s + '_${i}'">${options('panel')}</menu>`).join('')
+    const paged = `<div id="paged" x-data="{ items: Array.from({ length: 6 }, (_, i) => i), more() { setTimeout(() => { const n = this.items.length; this.items = Array.from({ length: 20 }, (_, i) => 1000 * n + i).concat(this.items) }, 2000) } }"><button id="more" @click="more()">More</button><template x-for="it in items" :key="it"><span><button :popovertarget="'pg' + it">pg</button><menu popover :id="'pg' + it">${options('pg')}</menu></span></template></div>`
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -60,7 +67,8 @@ function buildFixture() {
 <script>
 ${CAP ? `window.ManifestDeferConfig = { prewarmCap: ${CAP} };` : ''}
 document.addEventListener('alpine:init', () => {
-  Alpine.store('sel', { id: -1 });
+  // mode: off (no panel) | sync (panel re-mounts on select) | async (cleared, re-mounted 400ms later)
+  Alpine.store('sel', { id: -1, shown: -1, mode: 'off', pick(id) { this.id = id; if (this.mode === 'async') { this.shown = -1; setTimeout(() => { this.shown = id }, 400) } else this.shown = id } });
   window.opts = Array.from({ length: ${OPTIONS} }, (_, i) => 'Option ' + i);
 });
 </script>
@@ -68,7 +76,7 @@ document.addEventListener('alpine:init', () => {
 <script defer src="/__alpine.js"></script>
 </head>
 <body x-data="{ opts: window.opts, tab: 'a' }">
-<div class="tools">${tools}</div>
+<div class="tools">${tools}${details}</div>
 ${dialogs}
 <div style="display:flex;gap:16px;padding:4px">
   <table id="list"><tbody>${rows}</tbody></table>
@@ -76,6 +84,8 @@ ${dialogs}
     <input id="q" placeholder="Search">
     <button id="show-pane" @click="tab = 'b'">Show pane</button>
     <div id="pane" x-show="tab === 'b'">${pane}</div>
+    ${paged}
+    <div id="side"><template x-for="s in ($store.sel.mode === 'off' || $store.sel.shown < 0 ? [] : [$store.sel.shown])" :key="s"><div>${panel}</div></template></div>
   </div>
 </div>
 </body>
@@ -111,7 +121,7 @@ function serve(html) {
 // ---- Instrumentation: effect census (reactivity engine wrapped before start) + DOM / stash churn ----
 
 const HOOKS = `(() => {
-  const S = window.__churn = { on: false, created: 0, runs: 0, add: 0, rem: 0, renders: 0, restashes: 0, live: 0 };
+  const S = window.__churn = { on: false, created: 0, runs: 0, add: 0, rem: 0, renders: 0, restashes: 0, live: 0, ids: [] };
   let A;
   Object.defineProperty(window, 'Alpine', { configurable: true, get() { return A; }, set(v) { A = v; install(v); } });
   function install(Al) {
@@ -124,18 +134,25 @@ const HOOKS = `(() => {
   }
   const isStash = (n) => n.nodeType === 1 && n.tagName === 'TEMPLATE' && n.hasAttribute('data-mnfst-defer');
   const size = (n) => n.nodeType === 1 ? 1 + n.getElementsByTagName('*').length : 0;
+  // A stash appearing inside a subtree mounted in this window is a registration, not a restash
+  let fresh = new WeakSet();
+  const isFresh = (el) => { for (let e = el; e; e = e.parentElement) if (fresh.has(e)) return true; return false; };
+  S.reset = () => { fresh = new WeakSet(); };
   const start = () => new MutationObserver((list) => {
     if (!S.on) return;
     for (const m of list) {
-      for (const n of m.addedNodes) { if (isStash(n)) S.restashes++; else S.add += size(n); }
-      for (const n of m.removedNodes) { if (isStash(n)) S.renders++; else S.rem += size(n); }
+      for (const n of m.addedNodes) {
+        if (isStash(n)) { if (!isFresh(m.target)) { S.restashes++; S.ids.push('-' + m.target.id); } }
+        else { S.add += size(n); if (n.nodeType === 1) fresh.add(n); }
+      }
+      for (const n of m.removedNodes) { if (isStash(n)) { S.renders++; S.ids.push('+' + m.target.id); } else S.rem += size(n); }
     }
   }).observe(document.documentElement, { subtree: true, childList: true });
   if (document.documentElement) start(); else document.addEventListener('readystatechange', start, { once: true });
 })();`
 
-const ARM = `(() => { const S = window.__churn; Object.assign(S, { created: 0, runs: 0, add: 0, rem: 0, renders: 0, restashes: 0, on: true }); })()`
-const READ = `(() => { const S = window.__churn; S.on = false; return { ...S, stats: window.ManifestDefer.stats() }; })()`
+const ARM = `(() => { const S = window.__churn; S.reset(); Object.assign(S, { created: 0, runs: 0, add: 0, rem: 0, renders: 0, restashes: 0, ids: [], on: true }); })()`
+const READ = `(() => { const S = window.__churn; S.on = false; const { reset, ...out } = S; return { ...out, stats: window.ManifestDefer.stats() }; })()`
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 // Headless Chrome runs idle callbacks only around frames; keep frames coming like a live page would
@@ -269,13 +286,49 @@ async function main() {
             after.push({ renders: r.renders, restashes: r.restashes, warm: r.stats.warm })
         }
 
+        // E: rows paged in 2s after a click, ids bound late; the next plain clicks stay at zero
+        const mo = await center(page, '#more')
+        await click(cdp, mo.x, mo.y)
+        await frames(page, 2600)
+        const paging = []
+        for (let k = 0; k < 2; k++) {
+            const { x, y } = await center(page, `#r${(k * 5 + 2) % ROWS} td`)
+            await page.evaluate(ARM)
+            await click(cdp, x, y)
+            await frames(page, 1200 * Math.max(1, THROTTLE / 3))
+            const r = await page.evaluate(READ)
+            paging.push({ renders: r.renders, restashes: r.restashes, ids: r.ids.slice(0, 6) })
+        }
+        const pagedRows = await page.evaluate(() => document.querySelectorAll('#paged menu').length)
+
+        // F/G: a side panel re-mounting its 12 menus on every select: only panel menus render, nothing unrelated is evicted
+        const remount = {}
+        for (const mode of ['sync', 'async']) {
+            await page.evaluate((m) => { Alpine.store('sel').mode = m }, mode)
+            const per = []
+            for (let k = 0; k < 6; k++) {
+                const { x, y } = await center(page, `#r${(k * 7 + 1) % ROWS} td`)
+                await page.evaluate(ARM)
+                await click(cdp, x, y)
+                await frames(page, (1500 + (mode === 'async' ? 400 : 0)) * Math.max(1, THROTTLE / 3))
+                const r = await page.evaluate(READ)
+                const other = r.ids.filter((id) => !/^[+-]sp/.test(id))
+                per.push({ panel: r.ids.filter((id) => /^\+sp/.test(id)).length, otherRenders: other.filter((id) => id[0] === '+').length, otherRestashes: other.filter((id) => id[0] === '-').length, warm: r.stats.warm, other: other.slice(0, 6) })
+            }
+            remount[mode] = per.slice(1)
+        }
+        await page.evaluate(() => { Alpine.store('sel').mode = 'off' })
+
+        // H: closed details keep their own label, stashed or not
+        const summaries = await page.evaluate(() => [...document.querySelectorAll('details[id^="ds"]')].map((d) => ({ id: d.id, pending: window.ManifestDefer.isPending(d), first: d.firstElementChild && d.firstElementChild.tagName, text: d.innerText.trim(), shown: !!(d.querySelector(':scope > summary') && d.querySelector(':scope > summary').getClientRects().length) })))
+
         const avg = (xs, k) => Math.round(xs.reduce((s, x) => s + x[k], 0) / xs.length * 10) / 10
         const steady = clicks.slice(2)
         const result = {
             deferFile: DEFER_FILE ? path.basename(path.dirname(DEFER_FILE)) + '/' + path.basename(DEFER_FILE) : 'src',
             throttle: THROTTLE, boot: { ...boot, prewarmSettledMs: bootPrewarmMs },
             perClick: { renders: avg(steady, 'renders'), restashes: avg(steady, 'restashes'), effectsCreated: avg(steady, 'created'), effectRuns: avg(steady, 'runs'), added: avg(steady, 'add'), removed: avg(steady, 'rem'), taskMs: avg(steady, 'taskMs'), maxWarm: Math.max(...clicks.map((c) => c.warm)) },
-            clicks, selected: sel, typing, firstOpenBoot, firstOpen, revealed, afterReveal: after, errors
+            clicks, selected: sel, typing, firstOpenBoot, firstOpen, revealed, afterReveal: after, paging, pagedRows, remount, summaries, errors
         }
         console.log(JSON_OUT ? JSON.stringify(result) : JSON.stringify(result, null, 2))
         if (ASSERT) {
@@ -289,6 +342,13 @@ async function main() {
             if (revealed.rendered < Math.min(PANE_MENUS, 8)) fails.push(`revealed pane rendered ${revealed.rendered}/${PANE_MENUS}`)
             if (!firstOpenBoot.pendingBefore || firstOpenBoot.options !== OPTIONS) fails.push('boot first open: ' + JSON.stringify(firstOpenBoot))
             if (!firstOpen || firstOpen.options !== OPTIONS) fails.push('first open did not render the menu: ' + JSON.stringify(firstOpen))
+            if (paging.some((c) => c.renders || c.restashes)) fails.push('clicks after rows paged in churn: ' + JSON.stringify(paging))
+            for (const [mode, per] of Object.entries(remount)) {
+                if (per.some((c) => c.otherRenders || c.otherRestashes)) fails.push(`${mode} panel re-mount churned unrelated containers: ` + JSON.stringify(per.map((c) => [c.otherRenders, c.otherRestashes, c.other])))
+                if (per.some((c) => c.panel < PANEL_MENUS)) fails.push(`${mode} panel menus not all rendered: ` + per.map((c) => c.panel).join(','))
+            }
+            if (summaries.some((d) => d.first !== 'SUMMARY' || d.text !== 'Label ' + d.id.slice(2) || !d.shown)) fails.push('details lost their summary: ' + JSON.stringify(summaries))
+            if (!summaries.some((d) => d.pending)) fails.push('no details stayed stashed (summary case untested)')
             if (errors.length) fails.push('page errors: ' + errors.join('; '))
             if (fails.length) { console.error('FAIL\n  ' + fails.join('\n  ')); process.exitCode = 1 } else console.error('PASS')
         }
