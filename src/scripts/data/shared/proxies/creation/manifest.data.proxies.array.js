@@ -62,7 +62,7 @@ function stableStringify(value, depth = 0) {
     return `{${parts.join(',')}}`;
 }
 
-// Reactive read of _v[source]: subscribes the caller exactly like the raw $x read
+// Reactive read of the source's list and field versions: subscribes the caller
 function sourceVersion(dataSourceName) {
     if (!dataSourceName || typeof Alpine === 'undefined') return undefined;
     const store = Alpine.store('data');

@@ -175,13 +175,18 @@ const writtenSources = new Set();
 const structural = new Set();   // sources whose membership or order changed in the write under way
 function markStructural(dataSourceName) { if (dataSourceName) structural.add(dataSourceName); }
 function isGranular(dataSourceName) {
-    const config = window.ManifestDataConfig?.getManifest?.()?.data?.[dataSourceName];
-    return !!config && typeof config === 'object' && config.granular === true;
+    try {
+        const config = window.ManifestDataConfig?.getManifest?.()?.data?.[dataSourceName];
+        return !!config && typeof config === 'object' && config.granular === true;
+    } catch (_) {
+        return false;
+    }
 }
 function touchFields(store, sources) {
     ensureStoreShape(store);
     const f = store._f;
     for (const source of sources) f[source] = (f[source] || 0) + 1;
+    f.all = (f.all || 0) + 1;   // $x.all operators read these rows too
     store._dataVersion = (store._dataVersion || 0) + 1;
 }
 // Bump for a finished write: fields-only where the source opted in and nothing structural happened
@@ -1117,6 +1122,7 @@ function initializeStore() {
         _initialized: false,
         _ready: false, // Flag to indicate when data is ready for Alpine evaluation
         _v: {}, // Per-source versions: `$x.<source>` reads subscribe to _v[source]; _v.all for `$x.all`
+        _f: {}, // Per-source field versions (granular sources): operator results read these too
         _dataVersion: 0, // Legacy global counter, bumped once per flush for external readers
         _currentUrl: window.location.pathname,
         // Operation-specific loading states (for UI reactivity)

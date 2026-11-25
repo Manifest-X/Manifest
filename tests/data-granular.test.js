@@ -111,8 +111,10 @@ describe('a granular source', () => {
         await ctx.store.landRows('fine', [{ $id: 'new', name: 'new', status: 'open' }], { mode: 'append' })
         await tick()
         expect([r.length(), r.statuses(), r.search()]).toEqual([2, 2, 2])
+        const beforeRemove = ctx.data()._v.fine
         await ctx.store.landRemove('fine', ['r3'])
         await tick()
+        expect(ctx.data()._v.fine).toBe(beforeRemove + 1)
         expect([r.length(), r.statuses(), r.search()]).toEqual([3, 3, 3])
         const v = ctx.data()._v.fine
         await ctx.store.landRows('fine', rows(9), { mode: 'replace', loading: false, ready: true })
@@ -166,6 +168,65 @@ describe('a granular source', () => {
         const v = ctx.data()._v.fine
         await ctx.store.landRows('fine', [{ $id: 'r1', name: 'sealed change' }], { mode: 'append' })
         expect(sealed.name).toBe('sealed change')
+        expect(ctx.data()._v.fine).toBe(v + 1)
+    })
+
+    it('operator results follow a field-only change: contents, not just re-runs', async () => {
+        const ctx = load()
+        await ctx.store.landRows('fine', rows(6))
+        const open = () => ctx.$x().fine.$query([['equal', 'status', 'open']]).map(r => r.$id)
+        let shown = null, firstName = null
+        ctx.effect(() => { shown = open() })
+        ctx.effect(() => { firstName = ctx.$x().fine.$query([['equal', 'status', 'open']])[0].name })
+        expect(shown).toEqual(['r1', 'r3', 'r5'])
+        await ctx.store.landRows('fine', [{ $id: 'r1', status: 'closed' }, { $id: 'r3', name: 'renamed' }], { mode: 'append' })
+        await tick()
+        expect(shown).toEqual(['r3', 'r5'])
+        expect(firstName).toBe('renamed')
+        expect(open()).toEqual(['r3', 'r5']) // a fresh call is not served the old result either
+        expect(ctx.$x().fine.$search('renamed', 'name').map(r => r.$id)).toEqual(['r3'])
+        ctx.mut.updateEntryInStore('fine', 'r5', { status: 'closed' })
+        await tick()
+        expect(shown).toEqual(['r3'])
+    })
+
+    it('$x.all operators follow a field-only change', async () => {
+        const ctx = load()
+        await ctx.store.landRows('fine', rows(4))
+        let open = null
+        ctx.effect(() => { open = ctx.$x().all.$query([['equal', 'status', 'open']]).map(r => r.$id) })
+        expect(open).toEqual(['r1', 'r3'])
+        await ctx.store.landRows('fine', [{ $id: 'r1', status: 'closed', name: 'renamed' }], { mode: 'append' })
+        await tick()
+        expect(open).toEqual(['r3'])
+        expect(ctx.$x().all.$search('renamed', 'name')).toHaveLength(1)
+    })
+
+    it('a replace landing that changes membership, an id change and a held delete are structural', async () => {
+        const ctx = load()
+        await ctx.store.landRows('fine', rows(5))
+        let v = ctx.data()._v.fine
+        await ctx.store.landRows('fine', rows(4), { mode: 'replace' }) // no loading flag (a $query landing)
+        expect(ctx.data()._v.fine).toBe(v + 1)
+        v = ctx.data()._v.fine
+        await ctx.store.landRows('fine', rows(4), { mode: 'replace' }) // same membership: fields only
+        expect(ctx.data()._v.fine).toBe(v)
+        ctx.store.mergeRowFields(ctx.data().fine[0], { $id: 'renamed-id' }, 'fine')
+        ctx.store.touchSource('fine', true)
+        expect(ctx.data()._v.fine).toBe(v + 1)
+        v = ctx.data()._v.fine
+        ctx.store.holdWrite('fine', 'r2', 'delete', null)
+        await ctx.store.landRows('fine', [{ $id: 'r2', name: 'still here?' }], { mode: 'append' })
+        expect(Alpine.raw(ctx.data().fine).some(r => r.$id === 'r2')).toBe(false)
+        expect(ctx.data()._v.fine).toBe(v + 1)
+    })
+
+    it('a manifest lookup that throws never stalls a landing', async () => {
+        const ctx = load()
+        await ctx.store.landRows('fine', rows(2))
+        window.ManifestDataConfig = { getManifest: () => { throw new Error('boom') } }
+        const v = ctx.data()._v.fine
+        expect(await ctx.store.landRows('fine', [{ $id: 'r1', name: 'x' }], { mode: 'append' })).toBe(true)
         expect(ctx.data()._v.fine).toBe(v + 1)
     })
 
