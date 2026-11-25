@@ -23,7 +23,7 @@ const block = (t) => `<style type="text/tailwindcss">${t}</style>`
 const idFor = (blocks) => 'id-' + blocks.length + '-' + blocks.join('|').length
 
 // The variants block is pre-placed so its text is known (the module keeps an existing one)
-async function boot({ bodyHtml = '<div class="p-4 card"></div>', headHtml = '', record = undefined } = {}) {
+async function boot({ bodyHtml = '<div class="p-4 card"></div>', headHtml = '', record = undefined, beforeImport } = {}) {
     document.head.innerHTML = `<style id="manifest-tailwind-variants" type="text/tailwindcss">${VARIANTS}</style>${headHtml}`
     document.body.innerHTML = bodyHtml
     window.tailwind = {}
@@ -45,6 +45,7 @@ async function boot({ bodyHtml = '<div class="p-4 card"></div>', headHtml = '', 
         delete window.__tailwindCacheId
     }
     window.__tailwindCache = state
+    if (beforeImport) beforeImport()
     const ready = new Promise((resolve) => window.addEventListener('manifest:utilities-ready', resolve, { once: true }))
     await import(/* @vite-ignore */ 'data:text/javascript,' + encodeURIComponent(bundleSrc + `\n//boot:${Math.random()}`))
     await ready
@@ -247,6 +248,19 @@ describe('Tailwind cache: engine mode', () => {
         expect(index.ids[0]).toBe(idFor([`@theme { --c: xxxxxx; }`]))
         expect(Object.keys(localStorage).filter(k => k.startsWith(KEY + ':')).length).toBe(4)
     }, 20000)
+
+    it('treats head blocks parsed before <body> as the baseline, not changes', async () => {
+        const { state } = await boot({ beforeImport: () => document.body.remove() })
+        document.head.insertAdjacentHTML('beforeend', block(A))
+        await wait(10)
+        document.documentElement.appendChild(document.createElement('body'))
+        document.body.innerHTML = '<div class="p-4"></div>'
+        await wait(10)
+        engineArrives(CSS)
+        await wait(1300)
+        expect(state.recordingEnded).toBeUndefined()
+        expect(entries().map(e => e.blocks)).toEqual([[A]])
+    })
 
     it('stops recording for the page view when a block is added (no later sheet is attributable to a full build)', async () => {
         const { state } = await boot()

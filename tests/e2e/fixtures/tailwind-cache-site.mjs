@@ -58,7 +58,8 @@ ${cards}
 }
 
 // pages: { '/path': html | () => html }. Engine requests are counted.
-export function serve({ libDir = path.join(ROOT, 'lib'), pages, delayEngineMs = 0 }) {
+// delayPaths: { '/slow.js': 800 } holds those page responses back
+export function serve({ libDir = path.join(ROOT, 'lib'), pages, delayEngineMs = 0, delayPaths = {} }) {
     const counts = { engine: 0 }
     const server = http.createServer((req, res) => {
         const p = new URL(req.url, 'http://x').pathname
@@ -80,8 +81,12 @@ export function serve({ libDir = path.join(ROOT, 'lib'), pages, delayEngineMs = 
         if (p === '/alpine.js') return send(path.join(ROOT, 'node_modules/alpinejs/dist/cdn.min.js'), type)
         const page = pages[p]
         if (!page) { res.writeHead(404); return res.end() }
-        res.writeHead(200, { 'Content-Type': p.endsWith('.css') ? 'text/css' : 'text/html', 'Cache-Control': 'no-store' })
-        res.end(typeof page === 'function' ? page() : page)
+        const respond = () => {
+            res.writeHead(200, { 'Content-Type': p.endsWith('.css') ? 'text/css' : p.endsWith('.js') ? 'text/javascript' : 'text/html', 'Cache-Control': 'no-store' })
+            res.end(typeof page === 'function' ? page() : page)
+        }
+        if (delayPaths[p]) return setTimeout(respond, delayPaths[p])
+        respond()
     })
     return new Promise((r) => server.listen(0, '127.0.0.1', () => r({
         port: server.address().port,

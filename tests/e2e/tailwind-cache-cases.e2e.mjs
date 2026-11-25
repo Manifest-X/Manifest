@@ -99,6 +99,8 @@ const pages = {
     '/rm-script': () => sitePage({ after: BLK('#ff0000'), body: BRAND + RM_SCRIPT }),
     '/rm-component': () => sitePage({ after: BLK('#ff0000'), body: BRAND + RM_COMPONENT }),
     '/rm-plain': () => sitePage({ after: BLK('#ff0000'), body: BRAND }),
+    '/slowhead': () => sitePage({ after: '<script src="/slow.js"></script>' + BLK('#ff0000'), body: BRAND }),
+    '/slow.js': 'window.__slow = 1',
     '/over': () => sitePage({ body: OVER_ROWS }),
     '/over-bare': () => sitePage({ body: OVER_ROWS, cache: false }),
     '/bare': () => sitePage({ body: '<div id="t" class="p-3">t</div>', cache: false }),
@@ -376,6 +378,24 @@ async function main() {
             check(`block removed at runtime (${path.slice(4)}): the entry for the remaining blocks never holds the removed theme`, !r.blueInEntry, JSON.stringify(r))
             check(`block removed at runtime (${path.slice(4)}): the next page shows the engine's colour`, r.bg === 'rgb(255, 0, 0)', `${JSON.stringify(r)}, engine loads ${loads}`)
             await c.close()
+        }
+
+
+        // A parser-blocking script before the head block, on a fresh origin: the head block is the baseline, so it records
+        if (only('slowhead')) {
+            const srvSlow = await serve({ pages, delayPaths: { '/slow.js': 800 } })
+            const slowBase = `http://${HOST}:${srvSlow.port}`
+            for (const rate of [1, 6]) {
+                const { c, p } = await fresh()
+                const cdp = await p.createCDPSession(); await cdp.send('Emulation.setCPUThrottlingRate', { rate })
+                const go = async () => { await p.goto(slowBase + '/slowhead', { waitUntil: 'load' }); await wait(rate > 1 ? 4000 : 2500); return p.evaluate((k) => ({ loads: document.querySelectorAll('script[src*="tailwind"]').length, ended: window.__tailwindCache && window.__tailwindCache.recordingEnded, replayed: !!(window.__tailwindCache && window.__tailwindCache.record), entries: Object.keys(localStorage).filter((x) => x.startsWith(k + ':')).length, bg: getComputedStyle(document.getElementById('t')).backgroundColor }), KEY) }
+                const v1 = await go()
+                const v2 = await go()
+                check(`slow script before the head block @${rate}x: visit 1 records`, v1.loads === 1 && !v1.ended && v1.entries === 1, JSON.stringify(v1))
+                check(`slow script before the head block @${rate}x: visit 2 replays with 0 engine loads`, v2.replayed && v2.loads === 0 && v2.bg === 'rgb(255, 0, 0)', JSON.stringify(v2))
+                await c.close()
+            }
+            await srvSlow.close()
         }
 
         // 3. Over the cap: recording stops early, later visits skip it, and cost matches the bare engine
