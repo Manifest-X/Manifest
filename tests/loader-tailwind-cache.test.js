@@ -38,7 +38,7 @@ function store(over = {}) {
 const block = (t) => `<style type="text/tailwindcss">${t}</style>`
 
 // armUtilities: stand in for the utilities module arming the watcher as it executes
-function boot({ url = 'https://site.example/app/', headExtra = block(A), afterLoader = '', plugins = 'utilities,toasts', armUtilities = true, tailwindAttr = '', before } = {}) {
+function boot({ url = 'https://site.example/app/', headExtra = block(A), afterLoader = '', plugins = 'utilities,toasts', armUtilities = true, tailwindAttr = 'cache', before } = {}) {
     window.happyDOM.setURL(url)
     window.happyDOM.settings.handleDisabledFileLoadingAsSuccess = true
     document.head.innerHTML = `<link rel="manifest" href="/manifest.json">${headExtra}`
@@ -180,12 +180,39 @@ describe('loader: Tailwind engine output cache', () => {
         expect(engineScripts()).toBe(1)
     })
 
-    it('data-tailwind="no-cache" keeps the eager engine and records nothing', async () => {
+    for (const attr of ['', 'no-cache']) {
+        it(`data-tailwind="${attr}" is the eager engine with no cache: no storage access, no state`, async () => {
+            store()
+            const getItem = vi.spyOn(Storage.prototype, 'getItem')
+            const reads = () => getItem.mock.calls.filter(([k]) => String(k).startsWith('tailwind-engine-cache')).length
+            boot({ tailwindAttr: attr })
+            await settle()
+            expect(cachedStyle()).toBeNull()
+            expect(window.__tailwindCache).toBeUndefined()
+            expect(engineScripts()).toBe(1)
+            expect(reads()).toBe(0)
+        })
+    }
+
+    it('never replays on a page that needed a block in <body> before', async () => {
         store()
-        boot({ tailwindAttr: 'no-cache' })
+        const index = JSON.parse(localStorage.getItem(KEY))
+        const text = ['', '/app/'].join('\u0000')
+        let h = 0x811c9dc5
+        for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193)
+        index.skip = [(h >>> 0).toString(36)]
+        localStorage.setItem(KEY, JSON.stringify(index))
+        boot()
         await settle()
         expect(cachedStyle()).toBeNull()
-        expect(window.__tailwindCache).toBeUndefined()
+        expect(engineScripts()).toBe(1)
+    })
+
+    it('never replays an entry recorded from a page with a block in <body>', async () => {
+        store({ body: true })
+        boot()
+        await settle()
+        expect(cachedStyle()).toBeNull()
         expect(engineScripts()).toBe(1)
     })
 

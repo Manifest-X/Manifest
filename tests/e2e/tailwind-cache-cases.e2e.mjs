@@ -11,6 +11,9 @@ const HOST = 'app.example'
 const KEY = 'tailwind-engine-cache:v2'
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 
+// ONLY=cascade,order,... runs selected sections
+const only = (name) => !process.env.ONLY || process.env.ONLY.split(',').includes(name)
+
 let failed = 0
 function check(name, ok, detail = '') {
     if (!ok) failed++
@@ -51,6 +54,16 @@ const APP_BODY = `
 const SEED_AFTER = `<style>body:has(.modal-open), html:has(body .modal-open) { background: rgb(9, 9, 9) } main > :last-child, body > :last-child { outline: 5px solid red }</style>`
 const SEED_BODY = `<main><div id="m" x-data="{o:false}"><button id="ob" @click="o=!o" :class="o && 'modal-open'">m</button></div></main><footer id="f" class="pt-1">f</footer>`
 
+
+// Full engine rebuild after a block is added at runtime (round-2 s19)
+const FR_X = BLK('#ff0000')
+const FR_Y = '@theme { --color-other: #00ff00; }'
+const FR_BTN = `<button id="fb" x-data="{o:false}" @click="o=!o" :class="o ? 'tracking-[0.37em]' : 'p-1'" class="m-1">b</button>`
+// Head block matches an entry; a body block (parsed) or a script-injected block changes the theme (round-2 s13)
+const HB_FILLER = '<div class="p-1">filler filler filler filler filler filler filler filler</div>'.repeat(6000)
+// Over the 256 KB cap (round-2 s20)
+const OVER_ROWS = (() => { const c = []; for (let i = 1; i <= 1500; i++) c.push(`w-[${i}px]`, `h-[${i}px]`, `md:p-[${i}px]`, `hover:m-[${i}px]`); const r = []; for (let i = 0; i < c.length; i += 8) r.push(`<div class="${c.slice(i, i + 8).join(' ')}">r</div>`); return r.join('') })()
+
 const pages = {
     '/casc': () => sitePage({ before: '<style>@layer base { h1 { font-size: 40px } } .author-b { font-size: 21px }</style>', after: CASCADE_AFTER, body: CASCADE_BODY }),
     '/author.css': '@layer utilities { .author-l { margin-top: 13px } }',
@@ -65,7 +78,16 @@ const pages = {
     '/app': () => sitePage({ body: APP_BODY }),
     '/seed': () => sitePage({ after: SEED_AFTER, body: SEED_BODY }),
     '/plain': () => sitePage({ body: '<div id="t" class="p-3 text-red-500">t</div>' }),
-    '/nocache': () => sitePage({ body: '<div id="t" class="p-3">t</div>', loaderAttrs: '="no-cache"' }),
+    '/fr-a': () => sitePage({ after: FR_X, body: FR_BTN + `<script>addEventListener('load', () => setTimeout(() => { const s = document.createElement('style'); s.type = 'text/tailwindcss'; s.textContent = '${FR_Y}'; document.head.appendChild(s) }, 2500))</script>` }),
+    '/fr-b': () => sitePage({ after: FR_X + `<style type="text/tailwindcss">${FR_Y}</style>`, body: FR_BTN }),
+    '/hb1': () => sitePage({ after: BLK('#ff0000'), body: BRAND }),
+    '/hb2': () => sitePage({ after: BLK('#ff0000'), body: BRAND + HB_FILLER + BLK('#0000ff') + '<script>window.__blk = performance.now()</script>' }),
+    '/hb2-bare': () => sitePage({ after: BLK('#ff0000'), cache: false, body: BRAND + HB_FILLER + BLK('#0000ff') + '<script>window.__blk = performance.now()</script>' }),
+    '/hb3': () => sitePage({ after: BLK('#ff0000'), body: BRAND + `<script>setTimeout(() => { const s = document.createElement('style'); s.type = 'text/tailwindcss'; s.textContent = '@theme { --color-brand: #0000ff; }'; document.head.appendChild(s) }, 600)</script>` }),
+    '/over': () => sitePage({ body: OVER_ROWS }),
+    '/over-bare': () => sitePage({ body: OVER_ROWS, cache: false }),
+    '/bare': () => sitePage({ body: '<div id="t" class="p-3">t</div>', cache: false }),
+    '/nocache': () => sitePage({ body: '<div id="t" class="p-3">t</div>', cache: false, loaderAttrs: '="no-cache"' }),
 }
 
 const engineLoads = (p) => p.evaluate(() => document.querySelectorAll('script[src*="tailwind"]').length)
@@ -95,7 +117,7 @@ async function main() {
 
     try {
         // 1. Cascade position
-        for (const [path, ids] of [['/casc', ['h', 'c1', 'c2', 'c3', 'c4', 'c5']], ['/layers', ['l1', 'l2']]]) {
+        if (only('cascade')) for (const [path, ids] of [['/casc', ['h', 'c1', 'c2', 'c3', 'c4', 'c5']], ['/layers', ['l1', 'l2']]]) {
             const { c, p } = await fresh()
             const snap = () => p.evaluate((ids) => ids.map((id) => { const s = getComputedStyle(document.getElementById(id)); return `${id}:${s.fontSize}/${s.color}/${s.paddingTop}/${s.paddingLeft}/${s.paddingRight}/${s.marginTop}/${s.lineHeight}` }).join(' '), ids)
             await p.evaluateOnNewDocument(`window.__probe = () => ${JSON.stringify(ids)}.map((id) => { const e = document.getElementById(id); if (!e) return ''; const s = getComputedStyle(e); return s.fontSize + s.color + s.paddingTop + s.paddingLeft + s.marginTop + s.lineHeight }).join('|')`)
@@ -115,7 +137,7 @@ async function main() {
         }
 
         // 2a. Blocks compared in order (Tailwind concatenates in DOM order: last @theme wins)
-        {
+        if (only('order')) {
             const { c, p } = await fresh()
             await p.evaluateOnNewDocument(`window.__probe = () => { const e = document.getElementById('t'); return e ? getComputedStyle(e).backgroundColor : '' }`)
             await p.evaluateOnNewDocument(FRAMES)
@@ -132,7 +154,7 @@ async function main() {
         }
 
         // 2b. Blocks after the loader tag: another page's theme is never rendered
-        {
+        if (only('after')) {
             const { c, p } = await fresh()
             await p.evaluateOnNewDocument(`window.__probe = () => { const e = document.getElementById('t'); return e ? getComputedStyle(e).backgroundColor + ' ls=' + getComputedStyle(e).letterSpacing : '' }`)
             await p.evaluateOnNewDocument(FRAMES)
@@ -151,7 +173,7 @@ async function main() {
         }
 
         // 2c. Pages with different block sets don't thrash
-        {
+        if (only('thrash')) {
             const { c, p } = await fresh()
             const loads = []
             for (const path of ['/a2', '/b2', '/a2', '/b2', '/a2', '/b2']) loads.push(await visit(p, path))
@@ -162,7 +184,7 @@ async function main() {
         }
 
         // 2c'. LRU bound
-        {
+        if (only('lru')) {
             const { c, p } = await fresh()
             const extra = {}
             for (let i = 0; i < 6; i++) { const path = `/lru${i}`; pages[path] = () => sitePage({ before: BLK(`#0000${(10 + i).toString(16)}`), body: BRAND }); extra[path] = 1 }
@@ -173,7 +195,7 @@ async function main() {
         }
 
         // 3. Short-lived tokens: an interactive page wakes the engine on its first visit only
-        {
+        if (only('app')) {
             const { c, p } = await fresh()
             const user = async () => {
                 await p.click('#dd'); await wait(400); await p.click('#dd'); await wait(300)
@@ -198,7 +220,7 @@ async function main() {
         }
 
         // 4. Engine carrier never reaches body, never renders
-        {
+        if (only('carrier')) {
             const srvSlow = await serve({ pages, delayEngineMs: 600 })
             const slowBase = `http://${HOST}:${srvSlow.port}`
             const { c, p } = await fresh()
@@ -225,7 +247,7 @@ async function main() {
         }
 
         // 6. Entries from the future, and broken entries
-        {
+        if (only('bad')) {
             const { c, p } = await fresh()
             await visit(p, '/plain')
             const mutate = async (fn) => { await p.evaluate((k, f) => { const i = JSON.parse(localStorage.getItem(k)); const key = k + ':' + i.ids[0]; localStorage.setItem(key, (new Function('return ' + f))()(localStorage.getItem(key))) }, KEY, fn.toString()) }
@@ -253,14 +275,112 @@ async function main() {
             await c.close()
         }
 
-        // 8. Opt-out
-        {
+
+        // 1. A runtime block makes the engine rebuild from the page's classes alone: nothing compiled before it is stored without CSS
+        if (only('rebuild')) {
             const { c, p } = await fresh()
-            const a = await visit(p, '/nocache', 1800)
-            const b = await visit(p, '/nocache', 1800)
-            const keys = await p.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('tailwind-engine-cache')).length)
-            const pad = await p.$eval('#t', (e) => getComputedStyle(e).paddingTop)
-            check('data-tailwind="no-cache": engine every visit, nothing stored, Tailwind on', a === 1 && b === 1 && keys === 0 && pad === '12px', `loads ${a}/${b}, keys ${keys}, pad ${pad}`)
+            await visit(p, '/fr-a', 1200)
+            await p.click('#fb'); await wait(150); await p.click('#fb')
+            await wait(4500)
+            await p.goto('about:blank'); await wait(300)
+            await visit(p, '/fr-b', 1500)
+            const st = await p.evaluate(() => {
+                const s = window.__tailwindCache
+                const b = [...document.querySelectorAll('style[type="text/tailwindcss"]:not(#manifest-tailwind-variants)')].map((x) => x.textContent)
+                const r = JSON.parse(localStorage.getItem(s.key + ':' + s.idFor(b)) || 'null')
+                return { replayed: !!document.querySelector('style[data-tailwind-cache]'), stored: !!r && r.tokens.includes('tracking-[0.37em]'), css: !!r && r.css.includes('0.37em') }
+            })
+            await p.click('#fb'); await wait(1500)
+            const ls = await p.$eval('#fb', (e) => getComputedStyle(e).letterSpacing)
+            check('runtime block: a token is never stored without its CSS', !st.stored || st.css, JSON.stringify(st))
+            check('runtime block: the class is styled on the next page', ls !== 'normal' && ls !== '0px', ls)
+            // Self-check: every stored Tailwind utility of these pages has a rule in its entry's CSS
+            const missing = await p.evaluate((k) => {
+                const utilities = ['tracking-[0.37em]', 'p-1', 'm-1', 'bg-brand', 'text-brand', 'p-2', 'w-[37px]']
+                const i = JSON.parse(localStorage.getItem(k))
+                const out = []
+                for (const id of i.ids) {
+                    const r = JSON.parse(localStorage.getItem(k + ':' + id))
+                    for (const t of r.tokens) if (utilities.includes(t) && !r.css.includes('.' + CSS.escape(t))) out.push(id + ':' + t)
+                }
+                return out
+            }, KEY)
+            check('self-check: stored utilities all have rules in the stored CSS', missing.length === 0, missing.join(', ') || 'none missing')
+            await c.close()
+        }
+
+        // 2. Head blocks match an entry but the page changes the theme (HTTP cache warm, as on a repeat visit)
+        if (only('bodyblock')) {
+            const srvSlow = await serve({ pages, delayEngineMs: 400 })
+            const slowBase = `http://${HOST}:${srvSlow.port}`
+            const PROBE_BG = `window.__probe = () => { const e = document.getElementById('t'); return e ? getComputedStyle(e).backgroundColor : '' }`
+            const blueAt = (frames) => (frames.find((f) => f.v === 'rgb(0, 0, 255)') || { t: Infinity }).t
+            for (const rate of [1, 6]) {
+                const { c, p } = await fresh()
+                await p.evaluateOnNewDocument(PROBE_BG)
+                await p.evaluateOnNewDocument(FRAMES)
+                const cdp = await p.createCDPSession(); await cdp.send('Emulation.setCPUThrottlingRate', { rate })
+                const settle = rate > 1 ? 5000 : 3000
+                const go = async (path) => { await p.goto('about:blank'); await wait(200); await p.goto(slowBase + path, { waitUntil: 'load' }); await wait(settle); return p.evaluate(() => ({ frames: window.__frames, blk: Math.round(window.__blk || 0), cached: !!document.querySelector('style[data-tailwind-cache]') })) }
+                await go('/hb2-bare')
+                const bare = await go('/hb2-bare')
+                await go('/hb1')
+                const first = await go('/hb2')
+                const redAfter = first.frames.filter((f) => f.v === 'rgb(255, 0, 0)' && f.t > first.blk)
+                const fmt = (r) => r.frames.map((f) => f.v.replace('rgba(0, 0, 0, 0)', 'none') + '@' + f.t).join(' -> ')
+                const slack = rate > 1 ? 300 : 60
+                check(`body block @${rate}x: no frame after the body block is parsed shows the other page's theme`, redAfter.length === 0 && first.frames[first.frames.length - 1].v === 'rgb(0, 0, 255)', `block parsed @${first.blk}; ${fmt(first)}`)
+                check(`body block @${rate}x: correct no later than the bare engine (+${slack} ms)`, blueAt(first.frames) <= blueAt(bare.frames) + slack, `cache ${blueAt(first.frames)} ms vs bare ${blueAt(bare.frames)} ms; bare: ${fmt(bare)}`)
+                const again = await go('/hb2')
+                const replayed = await p.evaluate(() => !!(window.__tailwindCache && window.__tailwindCache.record))
+                check(`body block @${rate}x: second visit goes straight to the engine, correct no later than bare (+${slack} ms)`, !replayed && blueAt(again.frames) <= blueAt(bare.frames) + slack && again.frames[again.frames.length - 1].v === 'rgb(0, 0, 255)', `replayed ${replayed}; ${fmt(again)} vs bare ${fmt(bare)}`)
+                const inj = (await go('/hb3')).frames.map((f) => f.v)
+                check(`script-injected block @${rate}x: previous sheet kept until the engine's replaces it (no unstyled frame)`, inj[0] === 'rgb(255, 0, 0)' && inj[inj.length - 1] === 'rgb(0, 0, 255)' && !inj.includes('rgba(0, 0, 0, 0)'), JSON.stringify(inj))
+                await c.close()
+            }
+            await srvSlow.close()
+        }
+
+        // 3. Over the cap: recording stops early, later visits skip it, and cost matches the bare engine
+        if (only('overcap')) {
+            const { c, p } = await fresh()
+            await visit(p, '/over', 3000)
+            const st = await p.evaluate((k) => ({ over: !!(window.__tailwindCache && window.__tailwindCache.over), index: JSON.parse(localStorage.getItem(k) || 'null'), entries: Object.keys(localStorage).filter((x) => x.startsWith(k + ':')).length }), KEY)
+            check('over cap: recording gave up and the block set is marked', st.over && st.index && Object.keys(st.index.over).length === 1 && st.entries === 0, JSON.stringify({ over: st.over, marked: st.index && Object.keys(st.index.over), entries: st.entries }))
+            const cdp = await p.createCDPSession(); await cdp.send('Performance.enable')
+            const cost = async (path) => { const t0 = (await cdp.send('Performance.getMetrics')).metrics.find((m) => m.name === 'TaskDuration').value; await visit(p, path, 2500); return ((await cdp.send('Performance.getMetrics')).metrics.find((m) => m.name === 'TaskDuration').value - t0) * 1000 }
+            const a = [], b = []
+            for (let i = 0; i < 5; i++) { a.push(await cost('/over')); b.push(await cost('/over-bare')) }
+            const med = (x) => x.sort((m, n) => m - n)[2]
+            check('over cap: a repeat visit costs what the bare engine does (within 10% + 15 ms)', med(a) <= med(b) * 1.1 + 15, `cache ${med(a).toFixed(0)} ms vs bare ${med(b).toFixed(0)} ms`)
+            await c.close()
+        }
+
+        // 4. Orphaned and older-version keys are swept on the next write
+        if (only('sweep')) {
+            const { c, p } = await fresh()
+            await visit(p, '/plain', 1800)
+            await p.evaluate((k) => { localStorage.setItem(k + ':orphan1', '{}'); localStorage.setItem('tailwind-engine-cache:v1', '{}'); localStorage.setItem('tailwind-engine-cache:v1:abc', '{}'); localStorage.setItem('app-own-key', 'keep') }, KEY)
+            await visit(p, '/b', 1800)
+            const r = await p.evaluate((k) => { const i = JSON.parse(localStorage.getItem(k)); const keys = Object.keys(localStorage).filter((x) => x.startsWith('tailwind-engine-cache')); return { orphans: keys.filter((x) => x !== k && !i.ids.includes(x.slice(k.length + 1))), entries: i.ids.length, own: localStorage.getItem('app-own-key') } }, KEY)
+            check('storage: orphaned and older-version keys swept, other keys untouched', r.orphans.length === 0 && r.entries === 2 && r.own === 'keep', JSON.stringify(r))
+            await c.close()
+        }
+
+        // 8. Opt-in: bare data-tailwind (and the old "no-cache") is master: no storage access for this cache, no state, no observers of ours
+        if (only('optin')) for (const path of ['/bare', '/nocache']) {
+            const { c, p } = await fresh()
+            await p.evaluateOnNewDocument(() => {
+                window.__ops = 0
+                for (const m of ['getItem', 'setItem', 'removeItem']) { const o = Storage.prototype[m]; Storage.prototype[m] = function (k, ...r) { if (String(k).startsWith('tailwind-engine-cache')) window.__ops++; return o.call(this, k, ...r) } }
+                window.__pagehide = 0
+                const ae = window.addEventListener
+                window.addEventListener = function (t, ...r) { if (t === 'pagehide') window.__pagehide++; return ae.call(this, t, ...r) }
+            })
+            const a = await visit(p, path, 1800)
+            const b = await visit(p, path, 1800)
+            const r = await p.evaluate(() => ({ ops: window.__ops, pagehide: window.__pagehide, state: typeof window.__tailwindCache, keys: Object.keys(localStorage).filter((k) => k.startsWith('tailwind-engine-cache')).length, pad: getComputedStyle(document.getElementById('t')).paddingTop }))
+            check(`opt-in: ${path === '/bare' ? 'bare data-tailwind' : 'data-tailwind="no-cache"'} is the eager engine with no cache activity`, a === 1 && b === 1 && r.ops === 0 && r.pagehide === 0 && r.state === 'undefined' && r.keys === 0 && r.pad === '12px', `loads ${a}/${b}, ${JSON.stringify(r)}`)
             await c.close()
         }
     } finally {

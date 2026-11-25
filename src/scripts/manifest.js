@@ -1361,7 +1361,8 @@
 		const plugins = script.getAttribute('data-modules') ?? script.getAttribute('data-plugins');
 		const omit = script.getAttribute('data-omit');
 		const tailwind = script.getAttribute('data-tailwind') !== null;
-		const tailwindCache = script.getAttribute('data-tailwind') !== 'no-cache';
+		// data-tailwind="cache": opt in to replaying the engine's stored output
+		const tailwindCache = script.getAttribute('data-tailwind') === 'cache';
 		const version = script.getAttribute('data-version') || DEFAULT_VERSION;
 		const versionSet = !!script.getAttribute('data-version');
 		const alpine = script.getAttribute('data-alpine');
@@ -1469,14 +1470,17 @@
 	}
 	const allStrings = (a) => Array.isArray(a) && a.every(x => typeof x === 'string');
 	// Head fully parsed: replay only an entry built from exactly these blocks, in this order
-	function tryTailwindReplay(state) {
+	function tryTailwindReplay(state, index) {
 		try {
+			// A page that turned out to need a block in <body> goes straight to the engine
+			if (allStrings(index.skip) && index.skip.includes(state.pathId)) return false;
 			const blocks = tailwindAuthorBlocks();
 			const id = tailwindCacheId(state.v, blocks);
 			const rec = JSON.parse(localStorage.getItem(`${TAILWIND_CACHE_KEY}:${id}`) || 'null');
 			const age = rec ? Date.now() - rec.t : -1;
 			if (!rec || rec.v !== state.v || typeof rec.css !== 'string' || !allStrings(rec.tokens) || !allStrings(rec.blocks)) return false;
 			if (!(age >= 0 && age <= TAILWIND_CACHE_MAX_AGE) || rec.blocks.join('\u0000') !== blocks.join('\u0000') || rec.blocks.length !== blocks.length) return false;
+			if (rec.body) return false;
 			const style = document.createElement('style');
 			style.setAttribute('data-tailwind-cache', '');
 			style.textContent = rec.css;
@@ -1495,12 +1499,20 @@
 			if (!cfg.plugins.includes('utilities') || staticUtilitiesFullyCovered()) return miss;
 			if (document.querySelector('[data-mnfst-utilities], link[href*="prerender.tailwind.css"], link[href*="prerender.utilities.css"]')) return miss;
 			const v = `${LOADER_VERSION}|${cfg.version}|${TAILWIND_ENGINE_VERSION}`;
-			const state = window.__tailwindCache = { key: TAILWIND_CACHE_KEY, v, idFor: (blocks) => tailwindCacheId(v, blocks), record: null, armed: false };
+			const state = window.__tailwindCache = { key: TAILWIND_CACHE_KEY, v, idFor: (blocks) => tailwindCacheId(v, blocks), pathId: tailwindCacheId('', [location.pathname]), record: null, armed: false };
 			const index = JSON.parse(localStorage.getItem(TAILWIND_CACHE_KEY) || 'null');
 			if (!index || !allStrings(index.ids) || !index.ids.length) return miss;
-			return new Promise(resolve => {
+			return state.decision = new Promise(resolve => {
 				let done = false;
-				const decide = () => { if (!done) { done = true; resolve(tryTailwindReplay(state)); } };
+				const decide = () => {
+					if (done) return;
+					done = true;
+					const hit = tryTailwindReplay(state, index);
+					if (hit) watchParsedTailwindBlocks(state, cfg.version);
+					// Warm the HTTP cache so a later wake (e.g. a block in <body>) costs no round trip
+					if (hit && !integrityReady) fetch(`${getBaseUrl(cfg.version, CDN_HOSTS[0])}/${hostFile(CDN_HOSTS[0], 'manifest.tailwind.min.js')}`, { mode: 'no-cors', credentials: 'include', priority: 'low' }).catch(() => { });
+					resolve(hit);
+				};
 				if (document.body) return decide();
 				const o = new MutationObserver(() => { if (document.body) { o.disconnect(); decide(); } });
 				o.observe(document.documentElement, { childList: true });
@@ -1510,6 +1522,26 @@
 			return miss;
 		}
 	}
+	// Until DOMContentLoaded: a parsed block the entry wasn't built from means it is another page's theme; engine now
+	function watchParsedTailwindBlocks(state, version) {
+		const o = new MutationObserver((records) => {
+			for (const r of records) {
+				for (const n of r.addedNodes) {
+					if (n.localName !== 'style' || n.getAttribute('type') !== 'text/tailwindcss' || n.id === 'manifest-tailwind-variants') continue;
+					const blocks = tailwindAuthorBlocks();
+					if (blocks.length <= state.record.blocks.length && blocks.every((b, i) => b === state.record.blocks[i])) continue;
+					o.disconnect();
+					if (state.style) state.style.remove();
+					Object.assign(state, { style: null, parsedMismatch: true });
+					state.load = loadTailwind(version).catch(() => { });
+					return;
+				}
+			}
+		});
+		o.observe(document.documentElement, { childList: true, subtree: true });
+		document.addEventListener('DOMContentLoaded', () => o.disconnect(), { once: true });
+	}
+
 	// Where the eager engine would have landed (after the module wave), or the engine itself if nothing armed
 	function settleTailwindCache(version) {
 		const state = window.__tailwindCache;
@@ -1878,7 +1910,9 @@
 				});
 			});
 			if (config.tailwind && !staticUtilitiesFullyCovered()) {
-				pluginPromises.push(tailwindReplay.then(hit => hit ? null : loadTailwind(config.version)).catch(() => { }));
+				pluginPromises.push(config.tailwindCache
+					? tailwindReplay.then(hit => hit ? null : loadTailwind(config.version)).catch(() => { })
+					: loadTailwind(config.version).catch(() => { }));
 			}
 			// Usage sniff once the document is parsed: on-use modules download alongside the
 			// rest and run before Alpine. Derive path only — an explicit data-modules list is an
@@ -1964,7 +1998,7 @@
 			check();
 		}
 
-		const tailwindReplay = config.tailwind ? replayTailwindCache(config) : Promise.resolve(false);
+		const tailwindReplay = config.tailwindCache ? replayTailwindCache(config) : null;
 		hintEarlyFetches();
 		loadPlugins();
 	}

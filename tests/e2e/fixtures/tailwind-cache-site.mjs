@@ -34,7 +34,7 @@ export function twClasses() {
 
 export const MANIFEST_CLASSES = ['bg-surface-1', 'bg-surface-2', 'text-content-stark', 'text-content-subtle', 'bg-brand-surface', 'text-brand-content', 'border-line', 'bg-page']
 
-export function pageHtml({ tailwind = true, extraHead = '', body, classes, title = 'x', loaderAttrs = '' } = {}) {
+export function pageHtml({ tailwind = true, cache = true, extraHead = '', body, classes, title = 'x', loaderAttrs = '' } = {}) {
     const cls = classes || twClasses()
     const cards = body ?? (() => {
         const rows = []
@@ -48,7 +48,7 @@ export function pageHtml({ tailwind = true, extraHead = '', body, classes, title
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
 <link rel="stylesheet" href="/fw/manifest.css">
 ${extraHead}
-<script src="/fw/manifest.js" data-plugin-base="/fw" data-plugins="utilities,color" data-cdn="${'/cdn'}" data-alpine="/alpine.js"${tailwind ? ' data-tailwind' : ''}${loaderAttrs}></script></head>
+<script src="/fw/manifest.js" data-plugin-base="/fw" data-plugins="utilities,color" data-cdn="${'/cdn'}" data-alpine="/alpine.js"${tailwind ? ` data-tailwind${cache ? '="cache"' : ''}` : ''}${loaderAttrs}></script></head>
 <body x-data>
 <div id="probe-w" class="w-[37px] h-[13px] bg-[#123456]"></div>
 <div id="probe-hover" class="hover:bg-red-600 md:flex dark:bg-slate-800 data-[state=open]:bg-red-500 p-4" data-state="open"></div>
@@ -93,11 +93,11 @@ export function serve({ libDir = path.join(ROOT, 'lib'), pages, delayEngineMs = 
 export { ROOT }
 
 // Minimal page with markup before/after the loader tag (cascade and block-order cases)
-export function sitePage({ before = '', after = '', body = '', plugins = 'utilities,color', loaderAttrs = '', manifestCss = true } = {}) {
+export function sitePage({ before = '', after = '', body = '', plugins = 'utilities,color', loaderAttrs = '', manifestCss = true, cache = true } = {}) {
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
 ${manifestCss ? '<link rel="stylesheet" href="/fw/manifest.css">' : ''}
 ${before}
-<script src="/fw/manifest.js" data-plugin-base="/fw" data-plugins="${plugins}" data-cdn="/cdn" data-alpine="/alpine.js" data-tailwind${loaderAttrs}></script>
+<script src="/fw/manifest.js" data-plugin-base="/fw" data-plugins="${plugins}" data-cdn="/cdn" data-alpine="/alpine.js" data-tailwind${cache ? '="cache"' : ''}${loaderAttrs}></script>
 ${after}
 </head><body x-data>${body}<div id="probe-w" class="w-[37px]"></div></body></html>`
 }

@@ -248,16 +248,57 @@ describe('Tailwind cache: engine mode', () => {
         expect(Object.keys(localStorage).filter(k => k.startsWith(KEY + ':')).length).toBe(4)
     }, 20000)
 
-    it('does not store an oversize sheet, and drops the old entry for that block set', async () => {
+    it('after a block change, stores nothing until the engine has rebuilt and been shown the tokens again', async () => {
+        const { state } = await boot()
+        const engine = engineArrives(CSS)
+        await wait(1300)
+        const first = state.saved
+        expect(first).toBeTruthy()
+        const el = document.querySelector('.card')
+        el.classList.add('tracking-wide')
+        el.classList.remove('tracking-wide')
+        await wait(400)
+        document.head.insertAdjacentHTML('beforeend', block('@theme { --c: 1; }'))
+        await wait(20)
+        window.dispatchEvent(new Event('pagehide'))
+        expect(state.saved).toBe(first)
+        const carriers = []
+        new MutationObserver((ms) => ms.forEach(m => m.addedNodes.forEach(n => n.hasAttribute?.('data-tailwind-seed') && carriers.push(n.getAttribute('class'))))).observe(document.head, { childList: true })
+        engine.textContent = CSS + ' .x{}'
+        await wait(600)
+        expect(carriers.join(' ')).toContain('tracking-wide')
+        window.dispatchEvent(new Event('pagehide'))
+        expect(state.saved.blocks).toEqual(['@theme { --c: 1; }'])
+        expect(state.saved.tokens).toContain('tracking-wide')
+    })
+
+    it('over the cap: stops recording at once, marks the block set, and a later visit skips recording', async () => {
+        const { state } = await boot()
+        engineArrives('/*! tailwindcss */' + 'x'.repeat(260 * 1024))
+        await wait(1300)
+        expect(state.over).toBe(true)
+        const index = JSON.parse(localStorage.getItem(KEY))
+        expect(Object.keys(index.over)).toEqual([idFor([])])
+        window.__tailwindCache.stop()
+        const again = await boot()
+        engineArrives(CSS)
+        await wait(1300)
+        expect(again.state.recording).toBe(true)
+        expect(again.state.saved).toBeUndefined()
+        expect(entries().length).toBe(0)
+    })
+
+    it('sweeps keys under its prefix that the index does not list', async () => {
+        localStorage.setItem(KEY + ':orphan', '{}')
+        localStorage.setItem('tailwind-engine-cache:v1', '{}')
+        localStorage.setItem('unrelated', 'x')
         await boot()
         engineArrives(CSS)
-        await wait(1400)
+        await wait(1300)
+        expect(localStorage.getItem(KEY + ':orphan')).toBeNull()
+        expect(localStorage.getItem('tailwind-engine-cache:v1')).toBeNull()
+        expect(localStorage.getItem('unrelated')).toBe('x')
         expect(entries().length).toBe(1)
-        window.__tailwindCache.stop()
-        await boot()
-        engineArrives('/*! tailwindcss */' + 'x'.repeat(260 * 1024))
-        await wait(1400)
-        expect(entries().length).toBe(0)
     })
 
     it('records nothing when a shipped utilities sheet is present', async () => {

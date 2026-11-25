@@ -59,7 +59,7 @@ async function main() {
     let inlineCss = ''
     const bodyFor = () => PAGE === 'app' ? sitePage({ body: APP_BODY }) : PAGE.startsWith('sized:') ? pageHtml({ classes: sizedClasses(Number(PAGE.split(':')[1])) }) : pageHtml()
     const html = bodyFor()
-    const pages = { '/': html, '/inline': () => html.replace(' data-tailwind', '').replace('</head>', `<style>${inlineCss}</style></head>`) }
+    const pages = { '/': html, '/inline': () => html.replace(/ data-tailwind(="cache")?/, '').replace('</head>', `<style>${inlineCss}</style></head>`) }
     const servers = { master: await serve({ libDir: path.resolve(MASTER), pages }), branch: await serve(BRANCH ? { libDir: path.resolve(BRANCH), pages } : { pages }) }
     const browser = await puppeteer.launch({ headless: 'shell', args: ['--no-sandbox', `--host-resolver-rules=MAP ${HOST} 127.0.0.1`] })
     const url = (k, p = '/') => `http://${HOST}:${servers[k].port}${p}`
