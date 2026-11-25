@@ -7,7 +7,9 @@
  * 3. a source change does not read every item through the reactive proxy;
  * 4. an x-for form x-virtual cannot run (destructuring) still renders through Alpine's own x-for;
  * 5. an iterator source renders; rows whose items left the list go even while the container is hidden;
- *    a masonry `height` function re-packs when an item's field changes.
+ *    a masonry `height` function re-packs when an item's field changes;
+ * 6. the virtualized template: a <thead> x-for before the rows is left to Alpine, a template marked
+ *    data-virtual wins, and with neither the first x-for is still the one virtualized.
  *
  * Run: node tests/e2e/virtual-boot.e2e.mjs      (VIRTUAL_SRC=<dir with scripts/> to A/B)
  */
@@ -42,7 +44,20 @@ new MutationObserver((records) => {
 <script>document.addEventListener('alpine:initialized', () => { window.__atInit = document.getElementsByClassName('r').length })</script>
 </body></html>`
 
+const peak = `<script>window.__peak = 0; new MutationObserver(() => { const n = document.getElementsByClassName('r').length; if (n > window.__peak) window.__peak = n }).observe(document, { childList: true, subtree: true })</script>`
+const twoLists = (body) => `<!doctype html><html><head>${peak}<script src="/scripts/manifest.virtual.js"></script><script defer src="/__alpine.js"></script></head><body>
+<div id="app" x-data="{ cols: ['a', 'b'], items: Array.from({ length: 2000 }, (_, k) => ({ id: k, name: 'n' + k })) }">${body}</div></body></html>`
+
 const EXTRA = {
+    '/thead': twoLists(`<div id="v" x-virtual="{ estimate: 24 }" style="height:300px;overflow:auto"><table>
+  <thead><tr><template x-for="c in cols" :key="c"><th class="h" x-text="c"></th></template></tr></thead>
+  <tbody><template x-for="row in items" :key="row.id"><tr class="r"><td style="height:24px" x-text="row.name"></td></tr></template></tbody></table></div>`),
+    '/marked': twoLists(`<div id="v" x-virtual="{ estimate: 24 }" style="display:grid;grid-template-columns:1fr 1fr;height:300px;overflow:auto">
+  <div style="display:contents"><template x-for="c in cols" :key="c"><div class="h" x-text="c"></div></template></div>
+  <template data-virtual x-for="row in items" :key="row.id"><div class="r" style="display:contents"><div style="height:24px" x-text="row.name"></div><div>x</div></div></template></div>`),
+    '/first': twoLists(`<div id="v" x-virtual="{ estimate: 24 }" style="height:300px;overflow:auto">
+  <template x-for="row in items" :key="row.id"><div class="r" style="height:24px" x-text="row.name"></div></template>
+  <div><template x-for="c in cols" :key="c"><span class="h" x-text="c"></span></template></div></div>`),
     '/destructure': `<!doctype html><html><head><script src="/scripts/manifest.virtual.js"></script><script defer src="/__alpine.js"></script></head><body>
 <div id="app" x-data="{ items: Array.from({ length: 50 }, (_, k) => ({ id: k, name: 'n' + k })) }">
   <div id="v" x-virtual style="height:300px;overflow:auto"><template x-for="({ id, name }, i) in items" :key="id"><div class="r" x-text="name + '#' + i"></div></template></div>
@@ -224,6 +239,18 @@ async function main() {
             await wait(400)
             const after = await top('n3')
             check(start === '40px/0px' && after !== start, '/masonry: a changed item height re-packs the layout', { start, after })
+            await q.close()
+        }
+
+        // 6. Which template is virtualized when the container holds two x-for lists
+        for (const [route, label] of [['/thead', 'a <thead> x-for before the rows template'], ['/marked', 'the template marked data-virtual, after a header x-for'], ['/first', 'no marker: the first x-for, as before']]) {
+            const q = await browser.newPage()
+            const errors = []
+            q.on('pageerror', (e) => errors.push(e.message))
+            await q.goto(base + route, { waitUntil: 'load' })
+            await wait(500)
+            const got = await q.evaluate(() => ({ peak: window.__peak, rows: document.getElementsByClassName('r').length, head: [...document.querySelectorAll('#v .h')].map((n) => n.textContent).join(','), first: document.querySelector('#v .r')?.textContent }))
+            check(got.peak < 100 && got.rows > 5 && got.first?.startsWith('n0') && got.head === 'a,b' && errors.length === 0, `${route}: ${label} — rows virtualized, the other list rendered by Alpine`, { ...got, errors })
             await q.close()
         }
     } finally {

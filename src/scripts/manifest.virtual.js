@@ -5,6 +5,7 @@
  * works virtualized or not and shared columns/sticky/flex-wrap behave normally;
  * masonry positions absolutely. Options: estimate (px or {width,height}), overscan,
  * mode ('rows'|'gallery'|'masonry'; masonry must be explicit, others auto-detect).
+ * With several x-for templates inside, mark the virtualized one `data-virtual`.
  * Column widths must be content-independent or columns shift as the window changes.
  */
 
@@ -17,6 +18,19 @@ const FOR_RE = /^\s*\(?\s*([A-Za-z_$][\w$]*)\s*(?:,\s*([A-Za-z_$][\w$]*)\s*)?\)?
 function hasVirtual(el) {
     if (el.hasAttribute('x-virtual')) return true;
     for (const attr of el.attributes) if (attr.name.startsWith('x-virtual.')) return true;
+    return false;
+}
+
+// The virtualized template: one marked data-virtual, else the first outside <thead>/<tfoot>, else the first
+function pickTemplate(el) {
+    const all = el.querySelectorAll('template[x-for], template[data-virtual-for]');
+    if (all.length < 2) return all[0] || null;
+    for (const t of all) if (t.hasAttribute('data-virtual')) return t;
+    for (const t of all) if (!inTableHead(t, el)) return t;
+    return all[0];
+}
+function inTableHead(t, el) {
+    for (let n = t.parentElement; n && n !== el; n = n.parentElement) if (n.tagName === 'THEAD' || n.tagName === 'TFOOT') return true;
     return false;
 }
 
@@ -39,7 +53,7 @@ function initializeVirtualPlugin() {
     if (typeof Alpine.interceptInit === 'function') {
         Alpine.interceptInit((el) => {
             if (el.nodeType !== 1 || !hasVirtual(el) || el.hasAttribute('x-ignore')) return;
-            const template = el.querySelector('template[x-for]');
+            const template = pickTemplate(el);
             if (template) stashFor(template);
         });
     }
@@ -57,7 +71,7 @@ function initializeVirtualPlugin() {
     Alpine.directive('virtual', (el, { expression }, { evaluate, evaluateLater, effect, cleanup }) => {
 
         // --- Find the template (may be nested, e.g. table > tbody > template) ---
-        const template = el.querySelector('template[x-for], template[data-virtual-for]') || el.querySelector(':scope template');
+        const template = pickTemplate(el) || el.querySelector(':scope template');
         if (template) stashFor(template);
         const forExpr = template && (template.getAttribute('data-virtual-for') ?? template.getAttribute('x-for'));
         if (!forExpr) {
