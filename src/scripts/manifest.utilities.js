@@ -4517,9 +4517,9 @@ if (window.Alpine && typeof window.Alpine.magic === 'function') {
 
 const TAILWIND_CACHE_IGNORED = new Set(['dark', 'light', 'window-resizing']);
 const TAILWIND_CACHE_MAX_TOKENS = 6000;
-const TAILWIND_CACHE_MAX_CSS = 128 * 1024;
+const TAILWIND_CACHE_MAX_CSS = 256 * 1024;
 const TAILWIND_CACHE_ENTRIES = 4;
-const TAILWIND_CACHE_BUDGET = 640 * 1024;
+const TAILWIND_CACHE_BUDGET = 1024 * 1024;
 const TAILWIND_CACHE_QUIET = 1000;
 const TAILWIND_CACHE_MIN_INTERVAL = 10000;
 const TAILWIND_CACHE_FEED_DELAY = 250;
@@ -4574,20 +4574,31 @@ function literalClassTokens(expr, into) {
     return into;
 }
 
-// Class tokens a later visit may need: the document, <template> contents, x-transition and literal :class strings
+// Class tokens a later visit may need beyond what the observers saw: <template> contents,
+// x-transition values and literal :class strings
+const TAILWIND_TRANSITION_XPATH = ".//*[@*[starts-with(name(), 'x-transition:')]]";
 function staticClassTokens(into) {
-    const visit = (root) => {
-        for (const el of root.querySelectorAll('*')) {
-            if (el.hasAttribute('data-tailwind-seed')) continue;
-            for (const a of el.attributes) {
-                const n = a.name;
-                if (n === 'class' || n.startsWith('x-transition:')) addClassTokens(a.value, into);
-                else if (n === ':class' || n === 'x-bind:class') literalClassTokens(a.value, into);
-            }
-            if (el.localName === 'template' && el.content) visit(el.content);
+    const scan = (root) => {
+        for (const el of root.querySelectorAll('[\\:class], [x-bind\\:class]')) {
+            literalClassTokens(el.getAttribute(':class') || el.getAttribute('x-bind:class') || '', into);
+        }
+        let hits = null;
+        try {
+            const snap = document.evaluate(TAILWIND_TRANSITION_XPATH, root, null, 7, null);
+            hits = Array.from({ length: snap.snapshotLength }, (_, i) => snap.snapshotItem(i));
+        } catch (e) {
+            hits = root.querySelectorAll('*');
+        }
+        for (const el of hits) {
+            for (const a of el.attributes) if (a.name.startsWith('x-transition:')) addClassTokens(a.value, into);
+        }
+        for (const t of root.querySelectorAll('template')) {
+            if (!t.content || t.hasAttribute('data-tailwind-seed')) continue;
+            for (const el of t.content.querySelectorAll('[class]')) addClassTokens(el.getAttribute('class'), into);
+            scan(t.content);
         }
     };
-    visit(document);
+    scan(document);
     return into;
 }
 
@@ -4741,6 +4752,7 @@ function watchCachedTailwind(state) {
         document.querySelectorAll('style[type="text/tailwindcss"]').forEach(watchBlock);
     };
 
+    touchTailwindCacheEntry(state);
     arm();
     if (!checkBlocks()) return;
     checkTokens(documentClassTokens(new Set()));
@@ -4760,6 +4772,16 @@ function readTailwindCacheIndex(state) {
         if (index && Array.isArray(index.ids) && index.sizes && typeof index.sizes === 'object') return index;
     } catch (e) { /* rebuilt below */ }
     return { ids: [], sizes: {} };
+}
+
+// A replayed entry counts as recently used
+function touchTailwindCacheEntry(state) {
+    try {
+        const index = readTailwindCacheIndex(state);
+        if (!state.id || index.ids[0] === state.id || !index.ids.includes(state.id)) return;
+        index.ids = [state.id, ...index.ids.filter(x => x !== state.id)];
+        localStorage.setItem(state.key, JSON.stringify(index));
+    } catch (e) { /* order only */ }
 }
 
 // Bounded LRU: at most TAILWIND_CACHE_ENTRIES entries within TAILWIND_CACHE_BUDGET
