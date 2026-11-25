@@ -828,19 +828,21 @@
 		{ magic: '$rich', plugin: 'rich-text', attr: 'x-rich-text', family: true },
 		{ plugin: 'submissions', attr: 'x-submit', family: true },
 		...['$share', '$secure', '$links', '$push', '$app', '$haptics', '$biometric', '$camera'].map(magic => ({ magic, plugin: 'device' })),
-		{ plugin: 'charts', attr: 'x-chart', magic: '$chart' },
-		{ plugin: 'colorpicker', attr: 'x-colorpicker', magic: '$colorpicker' },
-		{ plugin: 'datepicker', attr: 'x-date', magic: '$date' },
+		{ plugin: 'charts', attr: 'x-chart', magic: '$chart', present: 'ensureChartsPluginInitialized' },
+		{ plugin: 'colorpicker', attr: 'x-colorpicker', magic: '$colorpicker', present: 'ensureColorpickerPluginInitialized' },
+		{ plugin: 'datepicker', attr: 'x-date', magic: '$date', present: 'ensureDatepickerPluginInitialized' },
 		{ plugin: 'combobox', attr: 'x-combobox' },
 		{ plugin: 'code', attr: 'x-code' },
 		{ plugin: 'code', attr: 'x-code-group' },
 		{ plugin: 'markdown', attr: 'x-markdown' },
-		{ plugin: 'export', attr: 'x-export', magic: '$export' },
-		{ plugin: 'export', attr: 'x-import', magic: '$import' },
+		{ plugin: 'export', attr: 'x-export', magic: '$export', present: 'ensureExportPluginInitialized' },
+		{ plugin: 'export', attr: 'x-import', magic: '$import', present: 'ensureImportPluginInitialized' },
 		{ plugin: 'virtual', attr: 'x-virtual' },
 		{ plugin: 'slides', attr: 'x-carousel' },
 		{ plugin: 'svg', attr: 'x-svg' }
-	].map(u => ({ ...u, re: u.magic ? new RegExp('\\' + u.magic + '\\b') : null }));
+	// late: adopted generically when it arrives after Alpine started (Rich Text adopts itself)
+	]
+	.map(u => ({ ...u, late: USAGE_LOADED_PLUGINS.includes(u.plugin) && !['rich-text', 'submissions'].includes(u.plugin), re: u.magic ? new RegExp('\\' + u.magic + '\\b') : null }));
 	const USAGE_NAMES = [...new Set(USAGE_PLUGINS.map(u => u.plugin))];
 	const USAGE_ATTRS = new Map(USAGE_PLUGINS.filter(u => u.attr).map(u => [u.attr, u.plugin]));
 	const USAGE_FAMILIES = USAGE_PLUGINS.filter(u => u.family).map(u => [u.attr + '-', u.plugin]);
@@ -922,6 +924,64 @@
 	stubEditMagic();
 	// Plugins loaded after Alpine started adopt what its first walk already passed
 	if (typeof document !== 'undefined') document.addEventListener('alpine:initialized', () => { window.__manifestAlpineStarted = true; }, { once: true });
+	// On-use modules that arrive after Alpine started: elements Alpine walked before the
+	// directive existed get its attributes re-set (handled as newly added directives), and
+	// their magics answer with an idle stand-in until then, so expressions never throw.
+	let lateArmed = false;
+	function armLateModules() {
+		const A = typeof window === 'undefined' ? null : window.Alpine;
+		if (lateArmed || !A || !A.directive || !A.magic) return;
+		lateArmed = true;
+		const late = USAGE_PLUGINS.filter(u => u.late);
+		const directives = new Set(late.filter(u => u.attr).map(u => u.attr.slice(2)));
+		const real = {};
+		const state = A.reactive ? A.reactive({ v: 0 }) : { v: 0 };
+		const idle = new Proxy(() => idle, { get: (t, k) => k === Symbol.toPrimitive ? () => '' : (typeof k === 'symbol' || k === 'then') ? undefined : idle });
+		const magic = A.magic, directive = A.directive;
+		for (const u of late) {
+			if (!u.magic || window[u.present]) continue;
+			const name = u.magic.slice(1);
+			magic.call(A, name, (el, utils) => { void state.v; return real[name] ? real[name](el, utils) : idle; });
+		}
+		A.magic = function (name, cb) {
+			if (late.some(u => u.magic === '$' + name)) { real[name] = cb; setTimeout(() => { state.v++; }, 0); }
+			return magic.apply(this, arguments);
+		};
+		const queued = new Map();
+		let timer = null;
+		// Re-walked from the outermost such element, as if inserted now (scope-providing directives need the subtree)
+		const adopt = () => {
+			timer = null;
+			const names = [...queued];
+			queued.clear();
+			const stale = (n, attr) => { for (const [d, mark] of names) { const a = 'x-' + d; if (n < mark && (attr === a || (attr.startsWith(a) && (attr.charCodeAt(a.length) === 46 || attr.charCodeAt(a.length) === 58)))) return true; } return false; };
+			const roots = [];
+			for (const el of document.querySelectorAll('*')) {
+				const n = el._x_marker;
+				if (!n || (roots.length && roots[roots.length - 1].contains(el))) continue;
+				for (const attr of el.attributes) if (stale(n, attr.name)) { roots.push(el); break; }
+			}
+			for (const el of roots) {
+				if (!el.isConnected) continue;
+				try { A.destroyTree(el); A.initTree(el); } catch (e) { console.warn('[Manifest Loader] Could not start a late module on', el, e); }
+			}
+		};
+		A.directive = function (name) {
+			const out = directive.apply(this, arguments);
+			if (directives.has(name) && window.__manifestAlpineStarted && typeof A.initTree === 'function' && !queued.has(name)) {
+				// Walked before now: a detached probe takes the next walk number
+				const probe = document.createElement('div');
+				try { A.initTree(probe); } catch (_) { /* no probe, no adoption */ }
+				if (probe._x_marker) queued.set(name, probe._x_marker);
+				if (!timer) timer = setTimeout(adopt, 0);
+			}
+			return out;
+		};
+	}
+	if (typeof document !== 'undefined') {
+		document.addEventListener('alpine:init', armLateModules, { once: true });
+		if (typeof window !== 'undefined' && window.Alpine && window.Alpine.magic) armLateModules();
+	}
 	// Framework web components — <x-*> tags that are NOT project components.
 	const FRAMEWORK_TAG_RE = /^x-(code|code-group)$/;
 	// Attribute values seen to hold no usage magic at all; repeated rows hit this instead of the regexes
