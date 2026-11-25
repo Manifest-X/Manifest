@@ -542,8 +542,10 @@ async function initializeMarkdownPlugin() {
                     .trim();
             };
 
+            // One render at a time; a change arriving meanwhile re-runs once with the latest value
+            let queued = null;
             const updateContent = async (element, newContent = null) => {
-                if (isUpdating) return;
+                if (isUpdating) { queued = { content: newContent === null && queued ? queued.content : newContent }; return; }
                 isUpdating = true;
                 const mdDone = mdTrack();
 
@@ -605,6 +607,7 @@ async function initializeMarkdownPlugin() {
                 } finally {
                     isUpdating = false;
                     mdDone();
+                    if (queued) { const q = queued; queued = null; updateContent(element, q.content); }
                 }
             };
 
@@ -695,8 +698,11 @@ async function initializeMarkdownPlugin() {
                 if (headingsSectionId && window._manifestHeadings) delete window._manifestHeadings[headingsSectionId];
             });
 
+            // A render that resolves after a newer one started is dropped
+            let renderGen = 0;
             effect(() => {
                 getMarkdownContent(async (pathOrContent) => {
+                    const gen = ++renderGen;
                     const mdDone = mdTrack();
                     try {
                     // Reset visibility if content is empty/undefined. Baked
@@ -763,6 +769,7 @@ async function initializeMarkdownPlugin() {
                         }
                     }
 
+                    if (gen !== renderGen) return;
                     // Content unchanged: skip re-render but restore visibility — a
                     // dev-reload can transiently push opacity to 0 while innerHTML is intact.
                     if (markdownContent === lastProcessedContent) {
@@ -792,6 +799,7 @@ async function initializeMarkdownPlugin() {
 
                     html = await maybeSanitizeMarkdownHtml(html, safe);
                     await loadModulesFor(html);
+                    if (gen !== renderGen || destroyed) return;
 
                     if (el.innerHTML !== html) {
                         // Create temporary container
@@ -978,7 +986,9 @@ async function initializeMarkdownPlugin() {
 // [x-markdown] misses modifier forms (x-markdown.safe); match by attribute name
 const isMarkdownAttr = (n) => n === 'x-markdown' || n.startsWith('x-markdown.');
 function findMarkdownElements() {
-    return [...document.querySelectorAll('*')].filter(el => el.getAttributeNames().some(isMarkdownAttr));
+    // Held by the loader until this module registered: started by it, not here
+    const held = window.__manifestHeld || (() => false);
+    return [...document.querySelectorAll('*')].filter(el => el.getAttributeNames().some(isMarkdownAttr) && !held(el));
 }
 
 // Track initialization to prevent duplicates
