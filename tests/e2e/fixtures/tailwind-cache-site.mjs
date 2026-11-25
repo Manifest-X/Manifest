@@ -80,7 +80,7 @@ export function serve({ libDir = path.join(ROOT, 'lib'), pages, delayEngineMs = 
         if (p === '/alpine.js') return send(path.join(ROOT, 'node_modules/alpinejs/dist/cdn.min.js'), type)
         const page = pages[p]
         if (!page) { res.writeHead(404); return res.end() }
-        res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' })
+        res.writeHead(200, { 'Content-Type': p.endsWith('.css') ? 'text/css' : 'text/html', 'Cache-Control': 'no-store' })
         res.end(typeof page === 'function' ? page() : page)
     })
     return new Promise((r) => server.listen(0, '127.0.0.1', () => r({
@@ -91,3 +91,13 @@ export function serve({ libDir = path.join(ROOT, 'lib'), pages, delayEngineMs = 
 }
 
 export { ROOT }
+
+// Minimal page with markup before/after the loader tag (cascade and block-order cases)
+export function sitePage({ before = '', after = '', body = '', plugins = 'utilities,color', loaderAttrs = '', manifestCss = true } = {}) {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
+${manifestCss ? '<link rel="stylesheet" href="/fw/manifest.css">' : ''}
+${before}
+<script src="/fw/manifest.js" data-plugin-base="/fw" data-plugins="${plugins}" data-cdn="/cdn" data-alpine="/alpine.js" data-tailwind${loaderAttrs}></script>
+${after}
+</head><body x-data>${body}<div id="probe-w" class="w-[37px]"></div></body></html>`
+}

@@ -4,10 +4,10 @@
  * Run: npm run build && node tests/e2e/tailwind-cache.e2e.mjs
  */
 import puppeteer from 'puppeteer'
-import { serve, pageHtml, twClasses } from './fixtures/tailwind-cache-site.mjs'
+import { serve, pageHtml, sitePage } from './fixtures/tailwind-cache-site.mjs'
 
 const HOST = 'app.example'
-const KEY = 'tailwind-engine-cache:v1'
+const KEY = 'tailwind-engine-cache:v2'
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 
 let failed = 0
@@ -40,7 +40,9 @@ const engineStyles = (page) => page.evaluate(() => ({
     seed: document.querySelectorAll('[data-tailwind-seed]').length,
 }))
 
-const record = (page) => page.evaluate((k) => { try { return JSON.parse(localStorage.getItem(k)) } catch (e) { return 'throws' } }, KEY)
+// Most recently written entry
+const record = (page) => page.evaluate((k) => { try { const i = JSON.parse(localStorage.getItem(k)); return i && i.ids.length ? JSON.parse(localStorage.getItem(k + ':' + i.ids[0])) : null } catch (e) { return 'throws' } }, KEY)
+const entryCount = (page) => page.evaluate((k) => { try { const i = JSON.parse(localStorage.getItem(k)); return i ? i.ids.length : 0 } catch (e) { return -1 } }, KEY)
 
 // Engine script tags injected into this document (the HTTP cache hides repeat fetches from the server)
 const engineLoads = (page) => page.evaluate(() => document.querySelectorAll('script[src*="tailwind"]').length)
@@ -73,7 +75,7 @@ async function main() {
         const controlDark = await page.$eval('#probe-hover', (e) => getComputedStyle(e).backgroundColor)
         const rec1 = await record(page)
         check('first visit: engine requested once', n1 === 1, `requests ${n1}`)
-        check('first visit: cache written with tokens, blocks and CSS', rec1 && rec1.css.startsWith('/*! tailwindcss') && rec1.tokens.includes('w-[37px]') && rec1.tokens.includes('author-thing') && rec1.blocks.some((b) => b.includes('@custom-variant')), rec1 ? `${rec1.tokens.length} tokens, ${rec1.css.length} chars` : 'none')
+        check('first visit: cache written with tokens, blocks and CSS', rec1 && rec1.css.startsWith('/*! tailwindcss') && rec1.tokens.includes('w-[37px]') && rec1.tokens.includes('author-thing') && Array.isArray(rec1.blocks) && rec1.variants.includes('@custom-variant'), rec1 ? `${rec1.tokens.length} tokens, ${rec1.css.length} chars` : 'none')
 
         // Repeat visit
         await page.mouse.move(0, 0)
@@ -198,7 +200,7 @@ async function main() {
             const p = await c.newPage()
             const a = await visit(p, `${dev}/`)
             const b = await visit(p, `${dev}/`)
-            const r = await record(p)
+            const r = await p.evaluate(() => Object.keys(localStorage).some((k) => k.startsWith('tailwind-engine-cache')))
             check('dev host: engine every visit, nothing cached', a === 1 && b === 1 && !r, `requests ${a}/${b}`)
             await c.close()
         }
