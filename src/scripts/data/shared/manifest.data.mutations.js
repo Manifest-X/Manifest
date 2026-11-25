@@ -45,7 +45,7 @@ function updateEntryInStore(dataSourceName, entryId, updates, options = {}) {
     const ds = window.ManifestDataStore;
     ds.mergeRowFields(store[dataSourceName][index], updates, dataSourceName);
     ds.noteLocalWrite(dataSourceName, entryId, { patch: updates });
-    ds.touchSource(dataSourceName);
+    ds.touchSource(dataSourceName, true);
     clearSourceCaches(dataSourceName);
 
     // Dispatch mutation event
