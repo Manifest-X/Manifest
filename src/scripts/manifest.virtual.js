@@ -5,6 +5,7 @@
  * works virtualized or not and shared columns/sticky/flex-wrap behave normally;
  * masonry positions absolutely. Options: estimate (px or {width,height}), overscan,
  * mode ('rows'|'gallery'|'masonry'; masonry must be explicit, others auto-detect).
+ * With several x-for templates inside, mark the virtualized one `data-virtual`.
  * Column widths must be content-independent or columns shift as the window changes.
  */
 
@@ -17,6 +18,21 @@ const FOR_RE = /^\s*\(?\s*([A-Za-z_$][\w$]*)\s*(?:,\s*([A-Za-z_$][\w$]*)\s*)?\)?
 function hasVirtual(el) {
     if (el.hasAttribute('x-virtual')) return true;
     for (const attr of el.attributes) if (attr.name.startsWith('x-virtual.')) return true;
+    return false;
+}
+
+// The virtualized template: one marked data-virtual, else the first outside <thead>/<tfoot>, else the first
+function pickTemplate(el, warn) {
+    const all = el.querySelectorAll('template[x-for], template[data-virtual-for]');
+    if (all.length < 2) return all[0] || null;
+    for (const t of all) if (t.hasAttribute('data-virtual')) return t;
+    const body = [...all].filter((t) => !inTableHead(t, el));
+    // Only document order decided: say how to make it explicit
+    if (warn && body.length !== 1) console.warn('[x-virtual] several x-for templates inside and none marked: virtualizing the first. Mark the rows template with data-virtual', el);
+    return body[0] || all[0];
+}
+function inTableHead(t, el) {
+    for (let n = t.parentElement; n && n !== el; n = n.parentElement) if (n.tagName === 'THEAD' || n.tagName === 'TFOOT') return true;
     return false;
 }
 
@@ -39,7 +55,7 @@ function initializeVirtualPlugin() {
     if (typeof Alpine.interceptInit === 'function') {
         Alpine.interceptInit((el) => {
             if (el.nodeType !== 1 || !hasVirtual(el) || el.hasAttribute('x-ignore')) return;
-            const template = el.querySelector('template[x-for]');
+            const template = pickTemplate(el);
             if (template) stashFor(template);
         });
     }
@@ -57,7 +73,7 @@ function initializeVirtualPlugin() {
     Alpine.directive('virtual', (el, { expression }, { evaluate, evaluateLater, effect, cleanup }) => {
 
         // --- Find the template (may be nested, e.g. table > tbody > template) ---
-        const template = el.querySelector('template[x-for], template[data-virtual-for]') || el.querySelector(':scope template');
+        const template = pickTemplate(el, true) || el.querySelector(':scope template');
         if (template) stashFor(template);
         const forExpr = template && (template.getAttribute('data-virtual-for') ?? template.getAttribute('x-for'));
         if (!forExpr) {
@@ -161,6 +177,10 @@ function initializeVirtualPlugin() {
         let maxItemH = 0;                      // masonry: back-scan bound
         let ready = false;                     // becomes true once container is sized
         let ro = null;
+        let destroyed = false;
+        let lastStart = 0;                     // last render's first unit
+        let builtAvg = 0;                      // the unmeasured-row estimate at the last full rebuild
+        let builtKeys = [];                    // key at each index when the offsets were last built
 
         const keyFn = buildKeyFn(itemName, indexName, keyExpr);
         const avgH = () => (measuredCount > 0 ? measuredSum / measuredCount : estimateH);
@@ -211,15 +231,89 @@ function initializeVirtualPlugin() {
             sortedTop = Array.from({ length: n }, (_, i) => i).sort((a, b) => pos[a].y - pos[b].y);
         }
 
+        // Rows that were before the window keep their offset step by key (an unchanged prefix is copied as is);
+        // only rows without one are estimated from the current average
         function rebuildSingle() {
-            const n = data.length;
+            const n = raw.length;
+            const prev = cumulative, prevKeys = builtKeys;
+            const keys = new Array(n);
+            const limit = Math.min(lastStart, n, prevKeys.length, prev.length - 1);
+            let p = 0;
+            for (; p < limit; p++) if ((keys[p] = keyFn(raw[p], p)) !== prevKeys[p]) break;
+            const oldLimit = Math.min(lastStart, prevKeys.length, prev.length - 1);
+            // Old rows are matched in order (a few skipped rows tolerated); many misses switch to a key map of the rest
+            let j = p, misses = 0, steps = null, seen = null;
+            const skipped = [];                // recently passed old rows: a row moved down a little (a swap)
+            const carried = (k) => {
+                if (steps) {
+                    const v = steps.get(k);
+                    if (!Array.isArray(v)) return v;
+                    const c = (seen || (seen = new Map())).get(k) || 0;
+                    seen.set(k, c + 1);
+                    return v[c];
+                }
+                if (j >= oldLimit) return undefined;
+                for (let d = 0; d < 8 && j + d < oldLimit; d++) {
+                    if (prevKeys[j + d] !== k) continue;
+                    for (let o = j; o < j + d; o++) { skipped.push(o); if (skipped.length > 8) skipped.shift(); }
+                    j += d + 1;
+                    return prev[j] - prev[j - 1];
+                }
+                for (let q = 0; q < skipped.length; q++) {
+                    const o = skipped[q];
+                    if (prevKeys[o] === k) { skipped.splice(q, 1); return prev[o + 1] - prev[o]; }
+                }
+                if (++misses > 16) {
+                    steps = new Map();
+                    for (let i = j; i < oldLimit; i++) {
+                        const ok = prevKeys[i];
+                        if (ok == null) continue;
+                        const step = prev[i + 1] - prev[i], had = steps.get(ok);
+                        if (had === undefined) steps.set(ok, step);
+                        else if (typeof had === 'number') steps.set(ok, [had, step]);   // a repeated key: steps in order
+                        else had.push(step);
+                    }
+                    return carried(k);
+                }
+                return undefined;
+            };
             cumulative = new Float64Array(n + 1);
-            let y = 0;
-            for (let i = 0; i < n; i++) {
+            if (p) cumulative.set(prev.subarray(0, p + 1));
+            let y = p ? prev[p] : 0;
+            for (let i = p; i < n; i++) {
                 cumulative[i] = y;
-                y += heightFor(keyFn(raw[i], i));
+                const k = i === p && keys[i] !== undefined ? keys[i] : keyFn(raw[i], i);
+                keys[i] = k;
+                const c = j < oldLimit || steps ? carried(k) : undefined;   // a carried step is the row's measured height if it had one
+                y += c ?? heights.get(k) ?? avgH();
             }
             cumulative[n] = y;
+            builtKeys = keys;
+            builtAvg = avgH();
+        }
+
+        // Re-measured rendered rows: shift the offsets after each by its change, without re-reading the list.
+        // A full rebuild instead when a row's index is unknown or the estimate for unmeasured rows moved by 10%
+        function applyMeasured(keys) {
+            const n = raw.length;
+            if (isMasonry || isGallery || cumulative.length !== n + 1 || Math.abs(avgH() - builtAvg) > builtAvg * 0.1) return rebuild();
+            const changes = [];
+            for (const key of keys) {
+                const entry = rendered.get(key);
+                const i = entry ? entry.i : -1;
+                if (!(i >= 0 && i < n) || keyFn(raw[i], i) !== key) return rebuild();
+                const d = heights.get(key) - (cumulative[i + 1] - cumulative[i]);
+                if (d) changes.push(i, d);
+            }
+            if (!changes.length) return;
+            const order = [];
+            for (let c = 0; c < changes.length; c += 2) order.push(c);
+            order.sort((a, b) => changes[a] - changes[b]);
+            let acc = 0, c = 0;
+            for (let j = changes[order[0]] + 1; j <= n; j++) {
+                while (c < order.length && changes[order[c]] < j) acc += changes[order[c++] + 1];
+                cumulative[j] += acc;
+            }
         }
 
         function rebuildGallery() {
@@ -289,6 +383,7 @@ function initializeVirtualPlugin() {
             let endUnit = findStart(eff + vh, total) + 1 + overscan;
             if (endUnit > total) endUnit = total;
 
+            lastStart = startUnit;
             setHeight(topSpacer, cumulative[startUnit]);
             setHeight(botSpacer, cumulative[total] - cumulative[endUnit]);
 
@@ -390,6 +485,7 @@ function initializeVirtualPlugin() {
 
         // Rebind by key: same row, possibly a new item object or position
         function rebind(entry, item, i) {
+            entry.i = i;
             if (entry.scope[itemName] !== item) entry.scope[itemName] = item;
             if (indexName && entry.scope[indexName] !== i) entry.scope[indexName] = i;
         }
@@ -401,12 +497,14 @@ function initializeVirtualPlugin() {
             const scope = Alpine.reactive(indexName ? { [itemName]: item, [indexName]: i } : { [itemName]: item });
             const removeScope = Alpine.addScopeToNode(node, scope);
             Alpine.initTree(node);
-            const entry = { node, scope, removeScope };
+            const entry = { node, scope, removeScope, targets: null, seen: false, i };
             rendered.set(key, entry);
+            observe(entry, key, node);
             return entry;
         }
 
         function removeRow(key, entry) {
+            if (entry.targets) for (const t of entry.targets) rowRo.unobserve(t);
             entry.removeScope && entry.removeScope();
             Alpine.destroyTree && Alpine.destroyTree(entry.node);
             entry.node.remove();
@@ -426,31 +524,86 @@ function initializeVirtualPlugin() {
 
         // ---- Measurement ----
 
-        let measureScheduled = false;
-        function scheduleMeasure(keys) {
-            if (isMasonry && heightFn) return;                   // heights known from data
-            // Only measure rows we haven't sized yet.
-            const pending = [];
-            for (const key of keys) {
-                const need = isGallery ? (!heights.has(key) || !widths.has(key)) : !heights.has(key);
-                if (need && rendered.has(key)) pending.push(key);
+        // Rendered rows report size changes; one observer, reconciled in the next frame
+        const rowRo = (isMasonry && heightFn) ? null : new ResizeObserver((entries) => {
+            for (const e of entries) {
+                const key = targetKey.get(e.target);
+                if (key !== undefined && rendered.has(key)) pending.add(key);
             }
-            if (!pending.length || measureScheduled) return;
-            measureScheduled = true;
+            if (pending.size) schedule();
+        });
+        const targetKey = new WeakMap();   // observed node -> row key
+        function observe(entry, key, node) {
+            if (!rowRo) return;
+            (entry.targets || (entry.targets = [])).push(node);
+            targetKey.set(node, key);
+            rowRo.observe(node);
+        }
+        // display:contents rows have no box: their cells are observed instead, and cells added later
+        // (x-if in the row) are found by one MutationObserver watching each such row's own children
+        let cellMo = null;
+        function watchChildren(entry, node) {
+            if (entry.watched) return;
+            entry.watched = true;
+            if (!cellMo) cellMo = new MutationObserver((records) => {
+                for (const r of records) {
+                    if (!hasElement(r.addedNodes) && !hasElement(r.removedNodes)) continue;   // text-only changes
+                    const key = targetKey.get(r.target);
+                    if (key !== undefined && rendered.get(key)?.node === r.target) pending.add(key);
+                }
+                if (pending.size) schedule();
+            });
+            cellMo.observe(node, { childList: true });
+        }
+        function observeCells(entry, key, node) {
+            for (const c of node.children) {
+                if (c.tagName === 'TEMPLATE') continue;
+                const d = getComputedStyle(c).display;
+                if (d === 'contents') observeCells(entry, key, c);
+                else if (d !== 'none' && !targetKey.has(c)) observe(entry, key, c);
+            }
+        }
+
+        // One frame callback: measure pending rows first (before render can remove them), then render
+        const pending = new Set();
+        let frameScheduled = false, renderPending = false;
+        function schedule(withRender) {
+            if (withRender) renderPending = true;
+            if (frameScheduled) return;
+            frameScheduled = true;
             requestAnimationFrame(() => {
-                measureScheduled = false;
-                let changed = false;
+                frameScheduled = false;
+                if (destroyed) return;
+                const changed = [];
                 for (const key of pending) {
                     const entry = rendered.get(key);
-                    if (entry && measureRow(key, entry.node)) changed = true;
+                    if (entry && measureRow(key, entry)) changed.push(key);
                 }
-                if (changed) { rebuild(); render(); }
+                pending.clear();
+                const doRender = changed.length > 0 || renderPending;
+                renderPending = false;
+                if (changed.length) applyMeasured(changed);
+                if (doRender) render();
             });
         }
 
-        function measureRow(key, node) {
+        function scheduleMeasure(keys) {
+            if (isMasonry && heightFn) return;                   // heights known from data
+            // Rows mounted since the last measure; later changes arrive through the row observer
+            for (const key of keys) {
+                const entry = rendered.get(key);
+                if (entry && (!entry.seen || !heights.has(key) || (isGallery && !widths.has(key)))) pending.add(key);
+            }
+            if (pending.size) schedule();
+        }
+
+        function measureRow(key, entry) {
+            const node = entry.node;
             if (!node.isConnected) return false;
-            const h = measureHeight(node);
+            const contents = getComputedStyle(node).display === 'contents';
+            if (contents && rowRo) { watchChildren(entry, node); observeCells(entry, key, node); }
+            entry.seen = true;
+            const h = contents ? unionHeight(node) : node.offsetHeight;
             if (!h) return false;
             let changed = false;
             const prev = heights.get(key);
@@ -469,13 +622,25 @@ function initializeVirtualPlugin() {
         }
 
         // display:contents rows (grid-table) have no box — measure the union of
-        // their cells. Everything else uses offsetHeight. Vertically sticky (top)
-        // cells report their stuck rect and aren't supported; horizontal sticky is fine.
-        function measureHeight(node) {
-            if (getComputedStyle(node).display !== 'contents') return node.offsetHeight;
+        // their cells. Vertically sticky (top) cells report their stuck rect and
+        // aren't supported; horizontal sticky is fine.
+        function unionHeight(node) {
             const b = { top: Infinity, bottom: -Infinity };
             unionCellRects(node, b);
             return b.bottom > b.top ? b.bottom - b.top : 0;
+        }
+
+        // Keys that left the source: their sizes go, and stop counting toward the estimate
+        function forgetLeft() {
+            const live = new Set();
+            for (let i = 0; i < raw.length; i++) if (raw[i] != null) live.add(keyFn(raw[i], i));
+            for (const [key, h] of heights) {
+                if (live.has(key)) continue;
+                heights.delete(key);
+                measuredSum -= h;
+                measuredCount--;
+            }
+            for (const key of widths.keys()) if (!live.has(key)) widths.delete(key);
         }
 
         // ---- Geometry helpers ----
@@ -508,6 +673,7 @@ function initializeVirtualPlugin() {
                 trackList(value);
                 data = Array.isArray(value) ? value : (value ? Array.from(value) : []);
                 raw = Alpine.raw ? Alpine.raw(data) : data;
+                if (heights.size > raw.length * 2 + 100) forgetLeft();   // amortised: only once the store outgrows the list
                 rebuild();
                 // render() drops rows that left the window or the list; unsized (hidden), it cannot
                 if (render() === false && rendered.size) dropStaleRows();
@@ -516,13 +682,7 @@ function initializeVirtualPlugin() {
 
         // ---- Scroll / resize ----
 
-        let destroyed = false;
-        let scrollScheduled = false;
-        const onScroll = () => {
-            if (scrollScheduled) return;
-            scrollScheduled = true;
-            requestAnimationFrame(() => { scrollScheduled = false; if (!destroyed) render(); });
-        };
+        const onScroll = () => schedule(true);
         scrollEl.addEventListener('scroll', onScroll, { passive: true });
 
         let resizeTimer = null;
@@ -538,6 +698,8 @@ function initializeVirtualPlugin() {
             destroyed = true;
             scrollEl.removeEventListener('scroll', onScroll);
             ro.disconnect();
+            rowRo && rowRo.disconnect();
+            cellMo && cellMo.disconnect();
             clearTimeout(resizeTimer);
             clearRows();
             if (isMasonry) sizer.remove();
@@ -587,6 +749,11 @@ function makeSpacer(kind, colCount) {
     s.style.background = 'none';
     s.style.pointerEvents = 'none';
     return s;
+}
+
+function hasElement(nodes) {
+    for (const n of nodes) if (n.nodeType === 1) return true;
+    return false;
 }
 
 // Box-less children (template, display:none) report a 0,0 rect that would drag
