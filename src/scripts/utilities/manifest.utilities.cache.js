@@ -48,7 +48,7 @@ TailwindCompiler.prototype.loadAndApplyCache = function () {
             if (currentClasses.size > 0) {
                 for (const [key, value] of this.cache.entries()) {
                     // Extract classes from cache key (format: "class1,class2-themeHash")
-                    // Find the last occurrence of '-' followed by 8 chars (theme hash length)
+                    // The theme hash has no '-': split on the last one
                     const lastDashIndex = key.lastIndexOf('-');
                     const classesPart = lastDashIndex > 0 ? key.substring(0, lastDashIndex) : key;
                     const cachedClasses = classesPart ? classesPart.split(',') : [];

@@ -885,6 +885,9 @@ TailwindCompiler.prototype.compileDelta = function (themeCss) {
     const applied = this._applied;
     const candidates = [];
     for (const cls of this.dynamicClassCache) if (!applied.classes.has(cls)) candidates.push(cls);
+    // A shipped at-rule variant arriving beside our own rules may need re-emitting after a bare partner: full regen decides
+    if (this.staticUtilitiesCoveredClasses && applied.entries.length &&
+        candidates.some(c => this.isAtRuleVariantClass(c) && this.isClassCovered(c))) return false;
     const classes = this.filterStaticallyCoveredClasses(candidates);
     // Tailwind display classes at a breakpoint join the display block, which only a full regen emits
     if (tailwindResponsiveDisplay(classes).length) return false;
@@ -1027,11 +1030,24 @@ TailwindCompiler.prototype.clearStaleUtilityPatches = function () {
     }
 };
 
+// Boot-time guesses are unlayered and beat every layered variant: drop them once real rules cover the page
+TailwindCompiler.prototype.dropCriticalStyles = function () {
+    if (!this.criticalStyleElement) return;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (this.criticalStyleElement && this.criticalStyleElement.parentNode) {
+            this.criticalStyleElement.parentNode.removeChild(this.criticalStyleElement);
+            this.criticalStyleElement = null;
+        }
+        this.ensureUtilityStylesLast();
+    }));
+};
+
 // Nothing to generate yet: arm delta on an empty layer so later classes insert, not regenerate
 TailwindCompiler.prototype.armEmptyDelta = function (themeCss, classes) {
     if (!this.styleElement) return;
     // A replayed cache sheet stays until the next full write replaces it
     if (!this.staticUtilitiesCoveredClasses && this.styleElement.textContent.trim()) return;
+    this._applied = null;
     this.styleElement.textContent = '@layer utilities {\n}';
     this.recordAppliedUtilities([], themeCss, classes);
 };
@@ -1120,6 +1136,7 @@ TailwindCompiler.prototype.compile = async function () {
                 if (allUtilities) {
                     const finalCss = `@layer utilities {\n${allUtilities}\n}`;
 
+                    this._applied = null; // a move below must not write the previous delta state back
                     this.styleElement.textContent = finalCss;
                     this.ensureUtilityStylesLast();
                     this.scheduleEnsureUtilityStylesLast();
@@ -1163,7 +1180,10 @@ TailwindCompiler.prototype.compile = async function () {
         let prefetchedTheme = null;
         if (this.canCompileDelta()) {
             prefetchedTheme = await this.fetchThemeContent();
-            if (prefetchedTheme && this.lastThemeKey === this._applied.themeKey && this.compileDelta(this._applied.themeCss)) return;
+            if (prefetchedTheme && this.lastThemeKey === this._applied.themeKey && this.compileDelta(this._applied.themeCss)) {
+                this.dropCriticalStyles();
+                return;
+            }
         }
 
         // For subsequent compilations, check for new dynamic classes
@@ -1208,6 +1228,7 @@ TailwindCompiler.prototype.compile = async function () {
                 if (allUtilities) {
                     const finalCss = `@layer utilities {\n${allUtilities}\n}`;
 
+                    this._applied = null; // a move below must not write the previous delta state back
                     this.styleElement.textContent = finalCss;
                     this.ensureUtilityStylesLast();
                     this.scheduleEnsureUtilityStylesLast();

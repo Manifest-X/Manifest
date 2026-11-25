@@ -17,7 +17,6 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
     document.addEventListener('manifest:component-loaded', handleComponentEvent);
     document.addEventListener('manifest:components-processed', handleComponentEvent);
     document.addEventListener('manifest:components-ready', handleComponentEvent);
-    // Route changes need no scan: the observer below sees every class a route reveals or adds
 
     // Single MutationObserver for all DOM changes: recompile only when a class not yet seen appears
     const observer = new MutationObserver((mutations) => {

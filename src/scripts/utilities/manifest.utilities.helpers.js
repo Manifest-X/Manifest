@@ -3,11 +3,19 @@
 
 // Ensure #manifest-styles is last in head so our responsive/variant rules win over Tailwind and any later-injected styles
 TailwindCompiler.prototype.ensureUtilityStylesLast = function () {
-    if (this.styleElement && this.styleElement.parentNode && document.head.lastElementChild !== this.styleElement) {
-        document.head.appendChild(this.styleElement);
-        if (this.resyncUtilitiesText) this.resyncUtilitiesText();
-    }
+    if (!this.styleElement || !this.styleElement.parentNode) return;
+    // Only a stylesheet after ours can out-order it (scripts and meta tags cannot)
+    let later = this.styleElement.nextElementSibling;
+    while (later && !isStylesheetNode(later)) later = later.nextElementSibling;
+    if (!later && this.styleElement.parentNode === document.head) return;
+    document.head.appendChild(this.styleElement);
+    if (this.resyncUtilitiesText) this.resyncUtilitiesText();
 };
+
+// Any <link> counts: a preload can become a stylesheet after insertion
+function isStylesheetNode(node) {
+    return node.localName === 'style' || node.localName === 'link';
+}
 
 // When any element is added to head after ours, move #manifest-styles to end. Handles CDN load order (e.g. Tailwind injecting after we run).
 TailwindCompiler.prototype.setupUtilityStylesOrderObserver = function () {
@@ -18,9 +26,7 @@ TailwindCompiler.prototype.setupUtilityStylesOrderObserver = function () {
             if (mutation.type !== 'childList' || !mutation.addedNodes.length) continue;
             for (const node of mutation.addedNodes) {
                 if (node.nodeType !== Node.ELEMENT_NODE || node === self.styleElement) continue;
-                // Only a stylesheet can out-order ours (scripts and meta tags cannot)
-                const tag = node.localName;
-                if (tag !== 'style' && !(tag === 'link' && /(^|\s)stylesheet(\s|$)/i.test(node.getAttribute('rel') || ''))) continue;
+                if (!isStylesheetNode(node)) continue;
                 self.ensureUtilityStylesLast();
                 break;
             }
@@ -402,14 +408,21 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
                         // Dev: cache-bust so an edited stylesheet is re-read
                         const url = dev ? `${source}${source.includes('?') ? '&' : '?'}t=${Math.floor(now / 1000)}` : source;
 
-                        const response = await fetch(url);
+                        // Overlapping compiles share one request
+                        const inflight = this._cssInflight || (this._cssInflight = new Map());
+                        let pending = inflight.get(url);
+                        if (!pending) {
+                            pending = fetch(url).then(response => (response.ok ? response.text() : null));
+                            inflight.set(url, pending);
+                            const done = () => inflight.delete(url);
+                            pending.then(done, done);
+                        }
+                        content = await pending;
 
-                        if (!response.ok) {
+                        if (content === null) {
                             console.warn('Failed to fetch stylesheet:', url);
                             return;
                         }
-
-                        content = await response.text();
 
                         // Cache the content with timestamp
                         this.cssContentCache.set(cacheKey, {

@@ -1158,7 +1158,7 @@ TailwindCompiler.prototype.loadAndApplyCache = function () {
             if (currentClasses.size > 0) {
                 for (const [key, value] of this.cache.entries()) {
                     // Extract classes from cache key (format: "class1,class2-themeHash")
-                    // Find the last occurrence of '-' followed by 8 chars (theme hash length)
+                    // The theme hash has no '-': split on the last one
                     const lastDashIndex = key.lastIndexOf('-');
                     const classesPart = lastDashIndex > 0 ? key.substring(0, lastDashIndex) : key;
                     const cachedClasses = classesPart ? classesPart.split(',') : [];
@@ -1324,11 +1324,19 @@ TailwindCompiler.prototype.cleanupCache = function () {
 
 // Ensure #manifest-styles is last in head so our responsive/variant rules win over Tailwind and any later-injected styles
 TailwindCompiler.prototype.ensureUtilityStylesLast = function () {
-    if (this.styleElement && this.styleElement.parentNode && document.head.lastElementChild !== this.styleElement) {
-        document.head.appendChild(this.styleElement);
-        if (this.resyncUtilitiesText) this.resyncUtilitiesText();
-    }
+    if (!this.styleElement || !this.styleElement.parentNode) return;
+    // Only a stylesheet after ours can out-order it (scripts and meta tags cannot)
+    let later = this.styleElement.nextElementSibling;
+    while (later && !isStylesheetNode(later)) later = later.nextElementSibling;
+    if (!later && this.styleElement.parentNode === document.head) return;
+    document.head.appendChild(this.styleElement);
+    if (this.resyncUtilitiesText) this.resyncUtilitiesText();
 };
+
+// Any <link> counts: a preload can become a stylesheet after insertion
+function isStylesheetNode(node) {
+    return node.localName === 'style' || node.localName === 'link';
+}
 
 // When any element is added to head after ours, move #manifest-styles to end. Handles CDN load order (e.g. Tailwind injecting after we run).
 TailwindCompiler.prototype.setupUtilityStylesOrderObserver = function () {
@@ -1339,9 +1347,7 @@ TailwindCompiler.prototype.setupUtilityStylesOrderObserver = function () {
             if (mutation.type !== 'childList' || !mutation.addedNodes.length) continue;
             for (const node of mutation.addedNodes) {
                 if (node.nodeType !== Node.ELEMENT_NODE || node === self.styleElement) continue;
-                // Only a stylesheet can out-order ours (scripts and meta tags cannot)
-                const tag = node.localName;
-                if (tag !== 'style' && !(tag === 'link' && /(^|\s)stylesheet(\s|$)/i.test(node.getAttribute('rel') || ''))) continue;
+                if (!isStylesheetNode(node)) continue;
                 self.ensureUtilityStylesLast();
                 break;
             }
@@ -1723,14 +1729,21 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
                         // Dev: cache-bust so an edited stylesheet is re-read
                         const url = dev ? `${source}${source.includes('?') ? '&' : '?'}t=${Math.floor(now / 1000)}` : source;
 
-                        const response = await fetch(url);
+                        // Overlapping compiles share one request
+                        const inflight = this._cssInflight || (this._cssInflight = new Map());
+                        let pending = inflight.get(url);
+                        if (!pending) {
+                            pending = fetch(url).then(response => (response.ok ? response.text() : null));
+                            inflight.set(url, pending);
+                            const done = () => inflight.delete(url);
+                            pending.then(done, done);
+                        }
+                        content = await pending;
 
-                        if (!response.ok) {
+                        if (content === null) {
                             console.warn('Failed to fetch stylesheet:', url);
                             return;
                         }
-
-                        content = await response.text();
 
                         // Cache the content with timestamp
                         this.cssContentCache.set(cacheKey, {
@@ -3391,6 +3404,9 @@ TailwindCompiler.prototype.compileDelta = function (themeCss) {
     const applied = this._applied;
     const candidates = [];
     for (const cls of this.dynamicClassCache) if (!applied.classes.has(cls)) candidates.push(cls);
+    // A shipped at-rule variant arriving beside our own rules may need re-emitting after a bare partner: full regen decides
+    if (this.staticUtilitiesCoveredClasses && applied.entries.length &&
+        candidates.some(c => this.isAtRuleVariantClass(c) && this.isClassCovered(c))) return false;
     const classes = this.filterStaticallyCoveredClasses(candidates);
     // Tailwind display classes at a breakpoint join the display block, which only a full regen emits
     if (tailwindResponsiveDisplay(classes).length) return false;
@@ -3533,11 +3549,24 @@ TailwindCompiler.prototype.clearStaleUtilityPatches = function () {
     }
 };
 
+// Boot-time guesses are unlayered and beat every layered variant: drop them once real rules cover the page
+TailwindCompiler.prototype.dropCriticalStyles = function () {
+    if (!this.criticalStyleElement) return;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (this.criticalStyleElement && this.criticalStyleElement.parentNode) {
+            this.criticalStyleElement.parentNode.removeChild(this.criticalStyleElement);
+            this.criticalStyleElement = null;
+        }
+        this.ensureUtilityStylesLast();
+    }));
+};
+
 // Nothing to generate yet: arm delta on an empty layer so later classes insert, not regenerate
 TailwindCompiler.prototype.armEmptyDelta = function (themeCss, classes) {
     if (!this.styleElement) return;
     // A replayed cache sheet stays until the next full write replaces it
     if (!this.staticUtilitiesCoveredClasses && this.styleElement.textContent.trim()) return;
+    this._applied = null;
     this.styleElement.textContent = '@layer utilities {\n}';
     this.recordAppliedUtilities([], themeCss, classes);
 };
@@ -3626,6 +3655,7 @@ TailwindCompiler.prototype.compile = async function () {
                 if (allUtilities) {
                     const finalCss = `@layer utilities {\n${allUtilities}\n}`;
 
+                    this._applied = null; // a move below must not write the previous delta state back
                     this.styleElement.textContent = finalCss;
                     this.ensureUtilityStylesLast();
                     this.scheduleEnsureUtilityStylesLast();
@@ -3669,7 +3699,10 @@ TailwindCompiler.prototype.compile = async function () {
         let prefetchedTheme = null;
         if (this.canCompileDelta()) {
             prefetchedTheme = await this.fetchThemeContent();
-            if (prefetchedTheme && this.lastThemeKey === this._applied.themeKey && this.compileDelta(this._applied.themeCss)) return;
+            if (prefetchedTheme && this.lastThemeKey === this._applied.themeKey && this.compileDelta(this._applied.themeCss)) {
+                this.dropCriticalStyles();
+                return;
+            }
         }
 
         // For subsequent compilations, check for new dynamic classes
@@ -3714,6 +3747,7 @@ TailwindCompiler.prototype.compile = async function () {
                 if (allUtilities) {
                     const finalCss = `@layer utilities {\n${allUtilities}\n}`;
 
+                    this._applied = null; // a move below must not write the previous delta state back
                     this.styleElement.textContent = finalCss;
                     this.ensureUtilityStylesLast();
                     this.scheduleEnsureUtilityStylesLast();
@@ -4257,7 +4291,6 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
     document.addEventListener('manifest:component-loaded', handleComponentEvent);
     document.addEventListener('manifest:components-processed', handleComponentEvent);
     document.addEventListener('manifest:components-ready', handleComponentEvent);
-    // Route changes need no scan: the observer below sees every class a route reveals or adds
 
     // Single MutationObserver for all DOM changes: recompile only when a class not yet seen appears
     const observer = new MutationObserver((mutations) => {

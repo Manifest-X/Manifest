@@ -2,7 +2,7 @@
  * Real-Chrome guard for the incremental utilities apply (insertRule deltas):
  * 1. after a sequence of deltas, the live @layer rule order equals a full regen's;
  * 2. responsive cascade matches a reload (lg: beats md: regardless of discovery order);
- * 3. inserted rules survive #manifest-styles being moved (anything appended to <head>).
+ * 3. inserted rules survive #manifest-styles being moved (a stylesheet appended to <head>).
  *
  * Run: node tests/e2e/utilities-delta.e2e.mjs
  */
@@ -80,9 +80,10 @@ async function main() {
         const live = await liveRules(page)
         const textMatchesBeforeMove = await page.evaluate(() => !!window.ManifestUtilities._applied && !window.ManifestUtilities._applied.dirty)
 
-        // 3. Anything appended to <head> moves the style element: inserted rules must survive
-        await page.evaluate(() => { const m = document.createElement('meta'); m.name = 'probe'; document.head.appendChild(m) })
+        // 3. A stylesheet appended to <head> moves the style element: inserted rules must survive
+        await page.evaluate(() => { const s = document.createElement('style'); s.textContent = '.probe{color:red}'; document.head.appendChild(s) })
         await wait(300)
+        if (!(await page.evaluate(() => document.head.lastElementChild === window.ManifestUtilities.styleElement))) fails.push('sheet was not moved after a later stylesheet')
         const afterMove = await liveRules(page)
         if (afterMove.join('\n') !== live.join('\n')) fails.push(`rules changed on head append (${live.length} -> ${afterMove.length})`)
         const s2AfterMove = await bg(page, 's2')
