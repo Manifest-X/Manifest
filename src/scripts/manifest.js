@@ -1049,6 +1049,30 @@
 		return [...found];
 	}
 
+	// Boot sniff, once per page: everything the parsed document uses (nothing counted as loaded);
+	// nodes added before the loader applies it are scanned then, not the whole document again
+	let bootUsage = null;
+	function sniffBoot() {
+		if (bootUsage) return bootUsage;
+		const added = new Set();
+		const mo = typeof MutationObserver === 'undefined' ? null : new MutationObserver((records) => {
+			for (const r of records) for (const n of r.addedNodes) if (n.nodeType === 1) added.add(n);
+		});
+		if (mo) mo.observe(document.documentElement, { childList: true, subtree: true });
+		const used = detectUsagePlugins([]);
+		bootUsage = {
+			used,
+			take() {
+				if (mo) mo.disconnect();
+				const all = new Set(used);
+				for (const n of added) if (n.isConnected) detectUsagePlugins([...all], n).forEach(p => all.add(p));
+				added.clear();
+				return [...all];
+			}
+		};
+		return bootUsage;
+	}
+
 	// Post-boot usage: component HTML, x-html and markdown content load the
 	// on-use plugins they reference. Derive path only, like the boot sniff.
 	let usageSniff = false;
@@ -1527,7 +1551,7 @@
 						}
 						// On-use modules this page uses, while manifest.json may still be in flight
 						if (config.deriveFromManifest) {
-							const used = detectUsagePlugins([...ALWAYS_ON, ...config.plugins, ..._omitted, 'components']);
+							const used = sniffBoot().used.filter(p => p !== 'components' && !_omitted.includes(p));
 							for (const p of resolveDependencies(used)) if (!config.plugins.includes(p)) hint('preload', getPluginUrl(p, config.version), 'script');
 						}
 					} catch (_) { /* optional */ }
@@ -1584,10 +1608,11 @@
 			const sniffed = !config.deriveFromManifest ? null : new Promise((resolve) => whenDomReady(() => {
 				let late = [];
 				try {
+					const all = sniffBoot().take();
 					// An omitted module the page uses fails far from the cause: say so once
-					const blocked = _omitted.length ? detectUsagePlugins(pluginsToLoad).filter(p => _omitted.includes(p)) : [];
+					const blocked = all.filter(p => _omitted.includes(p) && !pluginsToLoad.includes(p));
 					if (blocked.length) console.warn(`[Manifest Loader] data-omit lists ${blocked.join(', ')}, but this page uses ${blocked.length > 1 ? 'them' : 'it'}. Not loaded: remove ${blocked.length > 1 ? 'them' : 'it'} from data-omit to load.`);
-					const used = detectUsagePlugins([...pluginsToLoad, ..._omitted]);
+					const used = all.filter(p => !pluginsToLoad.includes(p) && !_omitted.includes(p));
 					if (used.length > 0) {
 						late = resolveDependencies(used).filter(p => !pluginsToLoad.includes(p)).map(p => addScript(p, config.version).catch(error => {
 							usageFailed.add(p);

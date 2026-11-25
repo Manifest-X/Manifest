@@ -141,6 +141,22 @@ describe('on-use directive modules: detection at boot', () => {
         boot({}, `<template x-if="a"><div x-chart="c"></div><template x-for="r in rows"><template x-if="r.open"><span x-text="$date.value"></span><div x-markdown="r.body"></div></template></template></template>`); await settle()
         expect(moved().sort()).toEqual(['charts', 'datepicker', 'markdown'])
     })
+    it('content added between the parse and manifest.json arriving is still sniffed at boot', async () => {
+        let release
+        const gate = new Promise(r => { release = r })
+        fetch.mockImplementation(async (url) => {
+            if (String(url).includes('manifest.json')) { await gate; return new Response('{"name":"x"}', { status: 200, headers: { 'content-type': 'application/json' } }) }
+            return new Response('', { status: 404 })
+        })
+        boot({}, '<main id="m"></main>')
+        await settle(3)
+        document.getElementById('m').innerHTML = '<div x-carousel></div>'
+        await settle(3)
+        expect(moved()).toEqual([])
+        release()
+        await settle()
+        expect(moved()).toEqual(['slides'])
+    })
     it('a <template> carrying the directive itself loads it', async () => {
         boot({}, '<template x-colorpicker><div>default picker</div></template>'); await settle()
         expect(moved()).toEqual(['colorpicker'])
