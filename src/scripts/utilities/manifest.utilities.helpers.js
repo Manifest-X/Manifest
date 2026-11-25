@@ -18,6 +18,9 @@ TailwindCompiler.prototype.setupUtilityStylesOrderObserver = function () {
             if (mutation.type !== 'childList' || !mutation.addedNodes.length) continue;
             for (const node of mutation.addedNodes) {
                 if (node.nodeType !== Node.ELEMENT_NODE || node === self.styleElement) continue;
+                // Only a stylesheet can out-order ours (scripts and meta tags cannot)
+                const tag = node.localName;
+                if (tag !== 'style' && !(tag === 'link' && /(^|\s)stylesheet(\s|$)/i.test(node.getAttribute('rel') || ''))) continue;
                 self.ensureUtilityStylesLast();
                 break;
             }
@@ -122,7 +125,10 @@ TailwindCompiler.prototype.scanStaticClasses = async function () {
             
             const componentUrls = [];
 
-            if (registry && registry.manifest) {
+            // A complete shipped sheet was baked from these same files: nothing to learn by fetching them
+            const baked = !!document.querySelector('[data-mnfst-utilities][data-mnfst-utilities-complete]');
+
+            if (!baked && registry && registry.manifest) {
                 // Get all component paths from manifest
                 const allComponents = [
                     ...(registry.manifest.preloadedComponents || []),
@@ -336,6 +342,12 @@ TailwindCompiler.prototype.getUsedClasses = function () {
     }
 };
 
+function isDevHostname(host) {
+    const h = String(host || '').toLowerCase();
+    return !h || h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1' || h === '0.0.0.0' ||
+        h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.test');
+}
+
 // Fetch theme content from CSS files
 TailwindCompiler.prototype.fetchThemeContent = async function () {
     const themeContents = new Set();
@@ -379,15 +391,16 @@ TailwindCompiler.prototype.fetchThemeContent = async function () {
                         cacheTime = this.hasScannedStatic ? 5000 : 30000;
                     }
 
-                    if (cached && (now - cached.timestamp) < cacheTime) {
+                    // Off a dev host a stylesheet never changes under a loaded page: fetch once, from the HTTP cache
+                    const dev = isDevHostname(location.hostname);
+                    if (cached && (!dev || (now - cached.timestamp) < cacheTime)) {
                         content = cached.content;
                         needsFetch = false;
                     }
 
                     if (needsFetch) {
-                        // Add timestamp for development cache busting, but keep it minimal
-                        const timestamp = Math.floor(now / 1000); // Only changes every second
-                        const url = `${source}${source.includes('?') ? '&' : '?'}t=${timestamp}`;
+                        // Dev: cache-bust so an edited stylesheet is re-read
+                        const url = dev ? `${source}${source.includes('?') ? '&' : '?'}t=${Math.floor(now / 1000)}` : source;
 
                         const response = await fetch(url);
 

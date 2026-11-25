@@ -5,7 +5,7 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
     // compile() queues a retry when busy; dropping the call here lost classes seen mid-compile
     const debouncedCompile = this.debounce(() => this.compile(), this.options.debounceTime);
 
-    // Recompile when components load/process; re-scan so component HTML is covered.
+    // Recompile when components load/process (the observer has already collected their classes)
     const handleComponentEvent = () => {
         if (!this.hasScannedStatic) {
             this.staticScanPromise = null;
@@ -17,39 +17,7 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
     document.addEventListener('manifest:component-loaded', handleComponentEvent);
     document.addEventListener('manifest:components-processed', handleComponentEvent);
     document.addEventListener('manifest:components-ready', handleComponentEvent);
-    // Also listen for manifest-prefixed events (for future compatibility)
-    document.addEventListener('manifest:components-processed', handleComponentEvent);
-    document.addEventListener('manifest:components-ready', handleComponentEvent);
-
-    // On route change, recompile only if genuinely new dynamic classes appeared.
-    document.addEventListener('manifest:route-change', (event) => {
-        if (this.hasScannedStatic) {
-            setTimeout(() => {
-                const currentDynamicCount = this.dynamicClassCache.size;
-                const currentClassesHash = this.lastClassesHash;
-
-                // Scan for new classes
-                const usedData = this.getUsedClasses();
-                const newDynamicCount = this.dynamicClassCache.size;
-                const dynamicClasses = Array.from(this.dynamicClassCache);
-                const newClassesHash = dynamicClasses.sort().join(',');
-
-                if (newDynamicCount > currentDynamicCount && newClassesHash !== currentClassesHash) {
-                    const newClasses = dynamicClasses.filter(cls =>
-                        // Ignore highlight/code-processing artifacts
-                        !cls.includes('hljs') &&
-                        !cls.startsWith('language-') &&
-                        !cls.includes('copy') &&
-                        !cls.includes('lines')
-                    );
-
-                    if (newClasses.length > 0) {
-                        debouncedCompile();
-                    }
-                }
-            }, 300); // let code processing finish
-        }
-    });
+    // Route changes need no scan: the observer below sees every class a route reveals or adds
 
     // Single MutationObserver for all DOM changes: recompile only when a class not yet seen appears
     const observer = new MutationObserver((mutations) => {
@@ -58,7 +26,7 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
         for (const mutation of mutations) {
             if (mutation.type === 'attributes') {
                 if (this.ignoredAttributes.includes(mutation.attributeName) || mutation.attributeName !== 'class') continue;
-                if (mutation.target.nodeType === Node.ELEMENT_NODE && this.collectNewClasses(mutation.target)) fresh = true;
+                if (mutation.target.nodeType === Node.ELEMENT_NODE && this.collectNewClasses(mutation.target, false, true)) fresh = true;
             } else if (mutation.type === 'childList') {
                 for (const node of mutation.addedNodes) {
                     if (node.nodeType !== Node.ELEMENT_NODE) continue;
@@ -88,10 +56,23 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
 };
 
 // Record classes not seen before; true when any were new. Quiet = collect without triggering
-TailwindCompiler.prototype.collectNewClasses = function (el, quiet) {
+// classOnly: a class attribute change (the element's binding expression was read when it was added)
+TailwindCompiler.prototype.collectNewClasses = function (el, quiet, classOnly) {
     if (!el.getAttribute) return false;
     const value = el.getAttribute('class');
-    let fresh = value ? this.recordClasses(value.split(/\s+/), quiet) : false;
+    let fresh = false;
+    if (value) {
+        // Rows repeat a handful of class strings: one fully recorded needs no re-split
+        const seen = this._seenClassStrings || (this._seenClassStrings = new Set());
+        if (!seen.has(value)) {
+            fresh = this.recordClasses(value.split(/\s+/), quiet);
+            if (!quiet) {
+                if (seen.size > 5000) seen.clear();
+                seen.add(value);
+            }
+        }
+    }
+    if (classOnly) return fresh;
     const bound = el.getAttribute(':class') || el.getAttribute('x-bind:class');
     if (bound && this.recordClasses(this.bindingClasses(bound), quiet)) fresh = true;
     return fresh;

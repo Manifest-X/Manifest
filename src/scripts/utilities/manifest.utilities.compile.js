@@ -1027,6 +1027,15 @@ TailwindCompiler.prototype.clearStaleUtilityPatches = function () {
     }
 };
 
+// Nothing to generate yet: arm delta on an empty layer so later classes insert, not regenerate
+TailwindCompiler.prototype.armEmptyDelta = function (themeCss, classes) {
+    if (!this.styleElement) return;
+    // A replayed cache sheet stays until the next full write replaces it
+    if (!this.staticUtilitiesCoveredClasses && this.styleElement.textContent.trim()) return;
+    this.styleElement.textContent = '@layer utilities {\n}';
+    this.recordAppliedUtilities([], themeCss, classes);
+};
+
 // Main compilation method
 TailwindCompiler.prototype.compile = async function () {
     if (this.usesStaticPrerenderUtilities) {
@@ -1105,7 +1114,8 @@ TailwindCompiler.prototype.compile = async function () {
                     }
                 }
 
-                const allUtilities = this.orderedUtilitiesCss(this.generateOrderedUtilities(themeCss, staticUsedData));
+                const staticEntries = this.generateOrderedUtilities(themeCss, staticUsedData);
+                const allUtilities = this.orderedUtilitiesCss(staticEntries);
 
                 if (allUtilities) {
                     const finalCss = `@layer utilities {\n${allUtilities}\n}`;
@@ -1127,6 +1137,7 @@ TailwindCompiler.prototype.compile = async function () {
                         });
                     });
                     this.lastClassesHash = staticUsedData.classes.sort().join(',');
+                    this.recordAppliedUtilities(staticEntries, themeCss, []);
 
                     // Save to cache for next page load
                     const themeHash = this.generateThemeHash(themeCss);
@@ -1139,6 +1150,7 @@ TailwindCompiler.prototype.compile = async function () {
                     this.savePersistentCache();
                 } else {
                     this.clearStaleUtilityPatches();
+                    this.armEmptyDelta(themeCss, []);
                 }
             }
 
@@ -1228,6 +1240,8 @@ TailwindCompiler.prototype.compile = async function () {
                     this.savePersistentCache();
                 } else {
                     this.clearStaleUtilityPatches();
+                    this.lastClassesHash = dynamicClassesHash;
+                    this.armEmptyDelta(themeCss, dynamicClasses);
                 }
             } else {
                 this._applied = null; // theme text moved: order keys are stale until the next full write

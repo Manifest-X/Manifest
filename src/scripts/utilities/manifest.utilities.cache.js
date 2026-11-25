@@ -177,8 +177,13 @@ TailwindCompiler.prototype.loadPersistentCache = function () {
 
 // Generate a hash of the theme variables to detect changes
 TailwindCompiler.prototype.generateThemeHash = function (themeCss) {
-    // Use encodeURIComponent to handle non-Latin1 characters safely
-    return encodeURIComponent(themeCss).slice(0, 8); // Simple hash of theme content
+    // FNV-1a over the whole theme text
+    let h = 0x811c9dc5;
+    for (let i = 0; i < themeCss.length; i++) {
+        h ^= themeCss.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(36) + themeCss.length.toString(36);
 };
 
 // Clean up old cache entries
