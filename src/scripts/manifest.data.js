@@ -575,7 +575,8 @@ function teamNow() {
     const team = typeof Alpine !== 'undefined' ? Alpine.store('auth')?.currentTeam : null;
     return team?.$id || team?.id || null;
 }
-function noteLoadTeam(dataSourceName, teamId = teamNow()) { loadTeams.set(dataSourceName, teamId); }
+// teamId: the team the read's own scope build used
+function noteLoadTeam(dataSourceName, teamId) { loadTeams.set(dataSourceName, teamId); }
 // Returns a close function: call it once the load has read (or given up)
 function beginTeamRead(dataSourceName) {
     teamPending.set(dataSourceName, (teamPending.get(dataSourceName) || 0) + 1);
@@ -1464,131 +1465,77 @@ function initializeStore() {
     Alpine.store('data', initialStore);
 }
 
-// Listen for team changes to reload team-scoped data sources
+// Team-scoped sources (team, teams, or either in a dual scope)
+function isTeamScope(scope) {
+    return scope === 'team' || scope === 'teams' || (Array.isArray(scope) && (scope.includes('team') || scope.includes('teams')));
+}
+
+// Each poll reloads sources read under another team than the current one
 function setupTeamChangeListener() {
     if (typeof Alpine === 'undefined') return;
 
-    let lastTeamId = null;
     let checking = false;
-    // A source's load had not picked its team at the last check: check again
-    let recheck = false;
+    let scoped = [];
+    let scopedFor = null;
+    // Sources with no recorded read (skipped, hydrated) reloaded once per team
+    const kicked = new Map();
 
     const checkTeamChange = async () => {
         if (checking) return;
         checking = true;
 
         try {
-            const authStore = Alpine.store('auth');
-            if (!authStore) {
-                checking = false;
-                return;
+            if (!Alpine.store('auth')) return;
+            const manifest = await window.ManifestDataConfig.ensureManifest();
+            if (!manifest?.data) return;
+            if (scopedFor !== manifest.data) {
+                scopedFor = manifest.data;
+                scoped = Object.getOwnPropertyNames(manifest.data)
+                    .filter(name => { const config = manifest.data[name]; return !!config && typeof config === 'object' && isTeamScope(config.scope); });
             }
 
-            const currentTeamId = teamNow();
-
-            if (currentTeamId !== lastTeamId || recheck) {
-                lastTeamId = currentTeamId;
-                recheck = false;
-
-                // Get manifest to identify team-scoped data sources
-                const manifest = await window.ManifestDataConfig.ensureManifest();
-                if (!manifest?.data) {
-                    checking = false;
-                    return;
+            const team = teamNow();
+            const raw = rawOf(Alpine.store('data')) || {};
+            let stale = null;
+            for (const name of scoped) {
+                // A load in flight records the team its build reads
+                if (teamPending.has(name)) continue;
+                if (loadTeams.has(name)) {
+                    if (loadTeams.get(name) === team) continue;
+                } else {
+                    // Never read: stays lazy; its first read builds for the current team
+                    if (raw[`_${name}_state`] === undefined && raw[name] == null) continue;
+                    if (team === null || kicked.get(name) === team) continue;
+                    kicked.set(name, team);
                 }
+                (stale || (stale = [])).push(name);
+            }
+            if (!stale) return;
 
-                // Find team-scoped data sources (both "team" and "teams" scopes, including dual scope)
-                const teamScopedDataSources = Object.getOwnPropertyNames(manifest.data).map(name => [name, manifest.data[name]])
-                    .filter(([name, config]) => {
-                        if (typeof config === 'object' && config.scope) {
-                            const scope = config.scope;
-                            // Check for "team", "teams", or array containing team/teams
-                            if (scope === 'team' || scope === 'teams') {
-                                return true;
-                            }
-                            if (Array.isArray(scope) && (scope.includes('team') || scope.includes('teams'))) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    })
-                    .map(([name]) => name)
-                    .filter(name => {
-                        if (loadTeams.has(name)) {
-                            // Read under this team already
-                            if (loadTeams.get(name) === currentTeamId) return false;
-                        } else {
-                            // Never read: stays lazy; its first read picks up the current team
-                            const raw = rawOf(Alpine.store('data')) || {};
-                            if (raw[`_${name}_state`] === undefined && raw[name] == null) {
-                                for (const key of [...dataSourceCache.keys()]) if (key.startsWith(`${name}:`)) dataSourceCache.delete(key);
-                                window.ManifestDataProxies?.clearAccessCache?.(name);
-                                return false;
-                            }
-                        }
-                        // A load in flight will read under the current team
-                        if (teamPending.has(name)) { recheck = true; return false; }
-                        return true;
+            const prefixes = stale.map(name => `${name}:`);
+            const owned = key => prefixes.some(prefix => key.startsWith(prefix));
+            for (const key of [...dataSourceCache.keys()]) if (owned(key)) dataSourceCache.delete(key);
+            for (const key of [...loadingPromises.keys()]) if (owned(key)) loadingPromises.delete(key);
+
+            const store = Alpine.store('data');
+            if (store) {
+                stale.forEach(name => { delete store[name]; });
+                touchSources(store, stale);
+            }
+            stale.forEach(name => {
+                loadTeams.delete(name);
+                window.ManifestDataProxies?.clearAccessCache?.(name);
+            });
+
+            // Reload for the current team; outranks a $query built for the old one
+            const loadDataSource = window.ManifestDataMain?.loadDataSource;
+            if (loadDataSource) {
+                stale.forEach(name => {
+                    window.ManifestDataMain?.cancelAuthRetry?.(name);
+                    Promise.resolve(loadDataSource(name, undefined, { reload: true })).catch(error => {
+                        console.error('[Manifest Data] Failed to reload data source after team change:', name, error);
                     });
-
-                if (teamScopedDataSources.length === 0) {
-                    checking = false;
-                    return;
-                }
-
-                // Clear cache for team-scoped data sources (similar to locale change)
-                teamScopedDataSources.forEach(dataSourceName => {
-                    // Clear all locale variants of this data source
-                    const keysToDelete = [];
-                    for (const key of dataSourceCache.keys()) {
-                        if (key.startsWith(`${dataSourceName}:`)) {
-                            keysToDelete.push(key);
-                        }
-                    }
-                    keysToDelete.forEach(key => dataSourceCache.delete(key));
-
-                    // Clear loading promises for this data source
-                    const promisesToDelete = [];
-                    for (const key of loadingPromises.keys()) {
-                        if (key.startsWith(`${dataSourceName}:`)) {
-                            promisesToDelete.push(key);
-                        }
-                    }
-                    promisesToDelete.forEach(key => loadingPromises.delete(key));
                 });
-
-                // Remove team-scoped data from store
-                const store = Alpine.store('data');
-                if (store) {
-                    teamScopedDataSources.forEach(dataSourceName => {
-                        delete store[dataSourceName];
-                    });
-                    touchSources(store, teamScopedDataSources);
-                }
-
-                // Clear proxy cache for these data sources
-                teamScopedDataSources.forEach(dataSourceName => {
-                    if (window.ManifestDataProxies && window.ManifestDataProxies.clearAccessCache) {
-                        window.ManifestDataProxies.clearAccessCache(dataSourceName);
-                    }
-                });
-
-                // Reload (not just cache-clear) so data is fresh for the new team
-                const loadDataSource = window.ManifestDataMain?.loadDataSource;
-                if (loadDataSource) {
-                    // Reload all team-scoped data sources with new team context
-                    Promise.all(teamScopedDataSources.map(async (dataSourceName) => {
-                        try {
-                            // This reload answers a read still waiting on an auth event
-                            window.ManifestDataMain?.cancelAuthRetry?.(dataSourceName);
-                            // Reload with new team context
-                            await loadDataSource(dataSourceName);
-                        } catch (error) {
-                            console.error('[Manifest Data] Failed to reload data source after team change:', dataSourceName, error);
-                        }
-                    })).then(() => {
-                    });
-                }
             }
         } catch (error) {
             console.error('[Manifest Data] Error handling team change:', error);
@@ -1600,9 +1547,7 @@ function setupTeamChangeListener() {
     // Wait for Alpine and auth store to be ready, then start polling
     let teamCheckIntervalId = null;
     const startPolling = () => {
-        const authStore = Alpine.store('auth');
-        if (authStore) {
-            lastTeamId = teamNow();
+        if (Alpine.store('auth')) {
             if (!teamCheckIntervalId) {
                 // Poll every 2s to limit CPU wakeups; team changes are rare
                 teamCheckIntervalId = setInterval(window.ManifestPending?.background?.(checkTeamChange) ?? checkTeamChange, 2000);
@@ -1612,11 +1557,6 @@ function setupTeamChangeListener() {
             setTimeout(window.ManifestPending?.background?.(startPolling) ?? startPolling, 100);
         }
     };
-
-    // Logout already reset scoped sources (data main); don't reload them again as a team change
-    const syncTeam = () => { lastTeamId = teamNow(); };
-    window.addEventListener('manifest:auth:logout', syncTeam);
-    window.addEventListener('manifest:auth:session-cleared', syncTeam);
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', startPolling);
@@ -2029,7 +1969,6 @@ window.ManifestDataStore = {
     sourceGeneration,
     noteLoadTeam,
     beginTeamRead,
-    teamNow,
     isStaleWrite,
     resetSource,
     touchSource,
@@ -8869,66 +8808,74 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         queries = named;
                     }
                     window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
-                    // A $auth. value or scope not resolved yet: wait for auth once, then run
-                    const build = () => window.ManifestDataQueries.buildAppwriteQueries(queries || [], scope, scopeColumns);
-                    let appwriteQueries = await build();
-                    if (appwriteQueries === null) {
-                        const waiting = window.ManifestDataMain?.awaitingQueries;
-                        waiting?.add(dataSourceName);
-                        try {
-                            await window.ManifestDataMain?.waitForAuthChange?.();
-                            // Let any reload of this source already running finish, then run as the newest read
-                            window.ManifestDataStore?.endRead?.(dataSourceName, readToken);
-                            await window.ManifestDataMain?.settledReads?.(dataSourceName);
-                        } finally {
-                            waiting?.delete(dataSourceName);
+                    // Team listener waits until this $query has picked its team, then compares
+                    const closeTeamRead = window.ManifestDataStore?.beginTeamRead?.(dataSourceName) || (() => {});
+                    const noteTeam = (team) => { if (team !== undefined) window.ManifestDataStore?.noteLoadTeam?.(dataSourceName, team); closeTeamRead(); };
+                    try {
+                        // A $auth. value or scope not resolved yet: wait for auth once, then run
+                        const build = () => window.ManifestDataQueries.buildAppwriteQueries(queries || [], scope, scopeColumns);
+                        let appwriteQueries = await build();
+                        if (appwriteQueries === null) {
+                            closeTeamRead();
+                            const waiting = window.ManifestDataMain?.awaitingQueries;
+                            waiting?.add(dataSourceName);
+                            try {
+                                await window.ManifestDataMain?.waitForAuthChange?.();
+                                // Let any reload of this source already running finish, then run as the newest read
+                                window.ManifestDataStore?.endRead?.(dataSourceName, readToken);
+                                await window.ManifestDataMain?.settledReads?.(dataSourceName);
+                            } finally {
+                                waiting?.delete(dataSourceName);
+                            }
+                            readToken = window.ManifestDataStore?.beginRead?.(dataSourceName);
+                            window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
+                            appwriteQueries = await build();
                         }
-                        readToken = window.ManifestDataStore?.beginRead?.(dataSourceName);
-                        window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
-                        appwriteQueries = await build();
-                    }
-                    if (appwriteQueries === null) {
-                        throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready — sign in, or check the $auth. values in its queries`);
-                    }
-                    const queryTeam = window.ManifestDataStore?.teamNow?.() ?? null;
-                    // Dedupe key: source + serialized queries (never across different queries)
-                    const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
-                    const { runDeduped, landRows, sourceGeneration, isLatestRead } = window.ManifestDataStore || {};
-                    const generation = sourceGeneration?.(dataSourceName);
-                    const requireAuth = window.ManifestDataMain?.requiresIdentity?.({ ...dataSource, queries: [dataSource.queries, queries] }) ?? true;
-                    // Paged sources: the new filter set starts again at its first window (or walks all)
-                    const main = window.ManifestDataMain;
-                    const spec = main?.pagingSpec?.(dataSource);
-                    const want = spec ? main.pagedWant(dataSourceName, spec) : 0;
-                    let paged = null;
-                    const run = spec
-                        ? async () => {
-                            const fetchPaged = () => main.fetchPagedRows(dataSourceName, queries || [], {
-                                want,
-                                isCurrent: () => !isLatestRead || isLatestRead(dataSourceName, readToken)
-                            });
-                            paged = await fetchPaged();
-                            if (paged === null) { await main.waitForAuthChange(); paged = await fetchPaged(); }
-                            if (paged === null) throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready yet — retry after auth settles`);
-                            return paged.rows;
+                        if (appwriteQueries === null) {
+                            throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready — sign in, or check the $auth. values in its queries`);
                         }
-                        : () => (main?.withRetry || ((_, fn) => fn()))(dataSource, () => window.ManifestDataAppwrite.loadTableRows(
-                            appwriteConfig.databaseId,
-                            tableId,
-                            appwriteQueries,
-                            { requireAuth }
-                        ), () => sourceGeneration?.(dataSourceName) === generation); // shared by identical calls: stop only on a reset
-                    const result = (runDeduped && !spec) ? await runDeduped(key, run) : await run();
-                    // Network landing: query result replaces the source (coalesced, identity-preserving);
-                    // only the last-issued read of this source lands
-                    const latest = !isLatestRead || isLatestRead(dataSourceName, readToken);
-                    if (result !== undefined && landRows && latest && sourceGeneration?.(dataSourceName) === generation) {
-                        window.ManifestDataMain?.setActiveQuery?.(dataSourceName, queries || [], Array.isArray(result) ? result.length : 0);
-                        if (paged) main.setPagingState(dataSourceName, { ...paged, spec }, { filters: queries || [] });
-                        window.ManifestDataStore?.noteLoadTeam?.(dataSourceName, paged ? paged.team : queryTeam);
-                        await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation, readToken });
+                        if (!window.ManifestDataMain?.pagingSpec?.(dataSource)) noteTeam(appwriteQueries.scopeTeam);
+                        // Dedupe key: source + serialized queries (never across different queries)
+                        const key = `${dataSourceName}:$query:${JSON.stringify(appwriteQueries.map(q => String(q)))}`;
+                        const { runDeduped, landRows, sourceGeneration, isLatestRead } = window.ManifestDataStore || {};
+                        const generation = sourceGeneration?.(dataSourceName);
+                        const requireAuth = window.ManifestDataMain?.requiresIdentity?.({ ...dataSource, queries: [dataSource.queries, queries] }) ?? true;
+                        // Paged sources: the new filter set starts again at its first window (or walks all)
+                        const main = window.ManifestDataMain;
+                        const spec = main?.pagingSpec?.(dataSource);
+                        const want = spec ? main.pagedWant(dataSourceName, spec) : 0;
+                        let paged = null;
+                        const run = spec
+                            ? async () => {
+                                const fetchPaged = () => main.fetchPagedRows(dataSourceName, queries || [], {
+                                    want,
+                                    isCurrent: () => !isLatestRead || isLatestRead(dataSourceName, readToken),
+                                    onTeam: noteTeam
+                                });
+                                paged = await fetchPaged();
+                                if (paged === null) { await main.waitForAuthChange(); paged = await fetchPaged(); }
+                                if (paged === null) throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready yet — retry after auth settles`);
+                                return paged.rows;
+                            }
+                            : () => (main?.withRetry || ((_, fn) => fn()))(dataSource, () => window.ManifestDataAppwrite.loadTableRows(
+                                appwriteConfig.databaseId,
+                                tableId,
+                                appwriteQueries,
+                                { requireAuth }
+                            ), () => sourceGeneration?.(dataSourceName) === generation); // shared by identical calls: stop only on a reset
+                        const result = (runDeduped && !spec) ? await runDeduped(key, run) : await run();
+                        // Network landing: query result replaces the source (coalesced, identity-preserving);
+                        // only the last-issued read of this source lands
+                        const latest = !isLatestRead || isLatestRead(dataSourceName, readToken);
+                        if (result !== undefined && landRows && latest && sourceGeneration?.(dataSourceName) === generation) {
+                            window.ManifestDataMain?.setActiveQuery?.(dataSourceName, queries || [], Array.isArray(result) ? result.length : 0);
+                            if (paged) main.setPagingState(dataSourceName, { ...paged, spec }, { filters: queries || [] });
+                            await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation, readToken });
+                        }
+                        return result;
+                    } finally {
+                        closeTeamRead();
                     }
-                    return result;
                 }
             }
 
@@ -11502,19 +11449,13 @@ function setupAuthResetListener() {
 
 // Client-side scope filter: Appwrite returns all accessible files, so narrow to
 // the current team to match database team-scope behavior.
+// The result carries the team it filtered by (scopeTeam), read once with the filter.
 async function filterFilesByScope(files, scope) {
-    if (!files || !Array.isArray(files) || files.length === 0) {
-        return files;
-    }
-
-    // Get auth store
     const authStore = typeof Alpine !== 'undefined' ? Alpine.store('auth') : null;
-    if (!authStore) {
-        return files;
-    }
+    const hasFiles = Array.isArray(files) && files.length > 0;
 
     // Wait for auth store initialization
-    if (!authStore._initialized || authStore.isAuthenticated === undefined) {
+    if (hasFiles && authStore && (!authStore._initialized || authStore.isAuthenticated === undefined)) {
         let attempts = 0;
         const maxAttempts = 10;
         while (attempts < maxAttempts && (!authStore._initialized || authStore.isAuthenticated === undefined)) {
@@ -11522,6 +11463,16 @@ async function filterFilesByScope(files, scope) {
             attempts++;
         }
     }
+
+    // No await below: one snapshot of the team
+    const currentTeam = authStore?.currentTeam;
+    const team = currentTeam?.$id || currentTeam?.id || null;
+    const tag = (out) => Array.isArray(out) && window.ManifestDataQueries?.tagTeam ? window.ManifestDataQueries.tagTeam(out, team) : out;
+    return tag(filterFilesSnapshot(files, scope, authStore, team, hasFiles));
+}
+
+function filterFilesSnapshot(files, scope, authStore, team, hasFiles) {
+    if (!hasFiles || !authStore) return files;
 
     const isAuthenticated = authStore.isAuthenticated === true;
     if (!isAuthenticated) {
@@ -11554,10 +11505,8 @@ async function filterFilesByScope(files, scope) {
     }
 
     if (hasTeamScope) {
-        const currentTeam = authStore.currentTeam;
-        const teamId = currentTeam?.$id || currentTeam?.id;
-        if (teamId) {
-            expectedPermissions.push(Permission.read(Role.team(teamId)));
+        if (team) {
+            expectedPermissions.push(Permission.read(Role.team(team)));
         } else {
             // No current team - return empty array (matches database behavior)
             return [];
@@ -11895,7 +11844,7 @@ function pagedFilters(dataSourceName, dataSource) {
 // Fetch pages of a table: `want` rows from `after` (a row $id), `size` per request, each
 // asking for one extra row so "more" is exact. isCurrent() false stops the walk.
 // Returns { rows, total, hasMore } or null when queries can't resolve yet (auth)
-async function fetchPagedRows(dataSourceName, filters, { want, after = null, isCurrent = () => true } = {}) {
+async function fetchPagedRows(dataSourceName, filters, { want, after = null, isCurrent = () => true, onTeam } = {}) {
     const manifest = await window.ManifestDataConfig.ensureManifest();
     const dataSource = manifest?.data?.[dataSourceName];
     const spec = pagingSpec(dataSource);
@@ -11906,7 +11855,8 @@ async function fetchPagedRows(dataSourceName, filters, { want, after = null, isC
     const scopeColumns = window.ManifestDataConfig.getScopeColumns(dataSource);
     const base = await window.ManifestDataQueries.buildAppwriteQueries(stripPageWindow(filters), scope, scopeColumns);
     if (base === null) return null;
-    const team = window.ManifestDataStore?.teamNow?.() ?? null;
+    const team = base.scopeTeam;
+    onTeam?.(team);
     const Query = window.Appwrite.Query;
     const requireAuth = requiresIdentity(dataSource);
     const limit = Math.max(1, want || spec.size);
@@ -12472,7 +12422,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     loadIdentities.set(cacheKey, load);
     // Team listener waits for this load to pick its team instead of reloading under it
     const closeTeamRead = window.ManifestDataStore.beginTeamRead?.(dataSourceName) || (() => {});
-    const noteTeam = (...team) => { window.ManifestDataStore.noteLoadTeam?.(dataSourceName, ...team); closeTeamRead(); };
+    // team: what the scope build used (undefined: nothing read, nothing recorded)
+    const noteTeam = (team) => { if (team !== undefined) window.ManifestDataStore.noteLoadTeam?.(dataSourceName, team); closeTeamRead(); };
     const superseded = () => load.abandoned || (sourceGeneration && sourceGeneration(dataSourceName) !== generation);
 
     // Unresolvable scope (signed out, or teamless): settle empty, not $loading forever; auth events reload.
@@ -12577,14 +12528,15 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                     const defaults = queriesConfig ? (queriesConfig.default || queriesConfig) : [];
                     const paged = spec ? await fetchPagedRows(dataSourceName, defaults, {
                         want: pagedWant(dataSourceName, spec),
-                        isCurrent: () => !superseded() && window.ManifestDataStore.isLatestRead(dataSourceName, readToken)
+                        isCurrent: () => !superseded() && window.ManifestDataStore.isLatestRead(dataSourceName, readToken),
+                        onTeam: noteTeam
                     }) : undefined;
                     if (paged) pagedResult = { ...paged, spec, filters: defaults };
                     const queries = spec
                         ? (paged ? [] : null)
                         : await window.ManifestDataQueries.buildAppwriteQueries(defaults, scope, scopeColumns);
 
-                    if (paged) noteTeam(paged.team); else noteTeam();
+                    noteTeam(spec ? undefined : queries?.scopeTeam);
                     // Not ready (auth/scope unresolved): skip this read, retry on an auth event
                     if (queries === null) {
                         scheduleAuthRetry(dataSourceName, locale);
@@ -12661,10 +12613,10 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
 
                     // Filter files by scope if scope is defined (client-side filtering)
                     // This matches the database team scope behavior
-                    if (scope && files && Array.isArray(files) && files.length > 0) {
+                    if (scope) {
                         files = await filterFilesByScope(files, scope);
-                    }
-                    noteTeam();
+                        noteTeam(files.scopeTeam);
+                    } else noteTeam();
 
                     data = files;
 
