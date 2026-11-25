@@ -73,6 +73,8 @@ describe('late on-use modules', () => {
         expect(window.__c.held).toBeUndefined()
         expect(window.__c.kid).toBeUndefined()
         expect(document.getElementById('kid').textContent).toBe('')
+        // Prerender waits while anything is held
+        expect(window.ManifestPending.labels()).toContain('held')
     })
 
     it('once the directive registers, the held element starts exactly once', async () => {
@@ -83,6 +85,7 @@ describe('late on-use modules', () => {
         expect(window.__c.held).toBe(1)
         expect(window.__c.kid).toBe(1)
         expect(document.getElementById('kid').textContent).toBe('live')
+        expect(window.ManifestPending.labels()).not.toContain('held')
         // Inserted after registration: Alpine's own walk, once
         document.getElementById('host').insertAdjacentHTML('beforeend', '<div id="later" x-chart></div>')
         await settle()

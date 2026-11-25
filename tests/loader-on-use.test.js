@@ -189,6 +189,16 @@ describe('on-use directive modules: later content', () => {
             expect(moved()).toEqual([mod])
         })
     }
+    it('an on-use attribute added to a live element loads its module', async () => {
+        boot({}, '<main id="m"><div id="t"></div></main>'); await settle()
+        document.getElementById('t').setAttribute('x-chartreuse', '')
+        document.getElementById('t').setAttribute('class', 'x-chart')
+        await settle()
+        expect(moved()).toEqual([])
+        document.getElementById('t').setAttribute('x-chart', '')
+        await settle()
+        expect(moved()).toEqual(['charts'])
+    })
     it('Manifest.loadUsed(element) reads template content too', async () => {
         boot({}, '<p>x</p>'); await settle()
         const t = document.createElement('template')
