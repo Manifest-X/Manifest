@@ -594,6 +594,19 @@ function initializeVirtualPlugin() {
             }
         }
 
+        // Keys that left the source: their sizes go, and stop counting toward the estimate
+        function forgetLeft() {
+            const live = new Set();
+            for (let i = 0; i < raw.length; i++) if (raw[i] != null) live.add(keyFn(raw[i], i));
+            for (const [key, h] of heights) {
+                if (live.has(key)) continue;
+                heights.delete(key);
+                measuredSum -= h;
+                measuredCount--;
+            }
+            for (const key of widths.keys()) if (!live.has(key)) widths.delete(key);
+        }
+
         // ---- Geometry helpers ----
 
         // Scroll-content position where the virtualized region begins (accounts
@@ -624,6 +637,7 @@ function initializeVirtualPlugin() {
                 trackList(value);
                 data = Array.isArray(value) ? value : (value ? Array.from(value) : []);
                 raw = Alpine.raw ? Alpine.raw(data) : data;
+                if (heights.size > raw.length * 2 + 100) forgetLeft();   // amortised: only once the store outgrows the list
                 rebuild();
                 // render() drops rows that left the window or the list; unsized (hidden), it cannot
                 if (render() === false && rendered.size) dropStaleRows();

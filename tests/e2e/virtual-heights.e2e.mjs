@@ -4,6 +4,7 @@
  * a container width change that re-wraps text, table rows and display:contents grid rows.
  * The offset model must follow: scroll height equals the true total after a full scroll,
  * no blank gap at the window edge, no jump when a row above the viewport grows.
+ * Stored heights of keys that left the source are dropped, and stop counting toward the estimate.
  *
  * Run: node tests/e2e/virtual-heights.e2e.mjs   (VIRTUAL_SRC=<dir with scripts/> to A/B;
  * VIRTUAL_BASELINE=<dir with scripts/> also times the 100k-item perf check against it)
@@ -100,6 +101,14 @@ const gallery = (n) => shell(`<div id="app" x-data="{ items: Array.from({ length
     <template x-for="row in items" :key="row.id"><div class="r g" :data-n="row.name" :style="'height:' + row.h + 'px'" x-text="row.name"></div></template>
   </div></div>`)
 
+// Every Map the page creates is recorded, to find the per-key height store by its keys
+const churn = () => shell(`<script>window.__maps = []; const M = window.Map; window.Map = class extends M { constructor(a) { super(a); window.__maps.push(this) } }</script>
+  <div id="app" x-data="{ gen: 0, items: [], page(n, h) { const g = ++this.gen; this.items = Array.from({ length: n }, (_, k) => ({ id: 'c' + g + '-' + k, name: 'n' + k, h })) } }" x-init="page(100, 30)">
+  <div id="v" x-virtual="{ estimate: 30 }" style="height:300px;width:400px;overflow:auto">
+    <template x-for="row in items" :key="row.id"><div class="r" :data-n="row.name" :style="'height:' + row.h + 'px'" x-text="row.name"></div></template>
+  </div></div>
+  <script>window.heightStore = () => Math.max(0, ...window.__maps.filter((m) => m.size && [...m.keys()].every((k) => /^c\\d+-\\d+$/.test(k)) && [...m.values()].every((x) => typeof x === 'number')).map((m) => m.size))</script>`)
+
 const perf = (script) => shell(`<div id="app" x-data="{ items: Array.from({ length: 100000 }, (_, k) => ({ id: k, name: 'n' + k })) }">
   <div id="v" x-virtual="{ estimate: 24 }" style="height:600px;width:400px;overflow:auto">
     <template x-for="row in items" :key="row.id"><div class="r" :data-n="row.name" style="height:24px" x-text="row.name"></div></template>
@@ -122,6 +131,7 @@ function serve() {
                 '/masonry': () => masonry(false),
                 '/masonry-fn': () => masonry(true),
                 '/gallery': () => gallery(n),
+                '/churn': () => churn(),
                 '/perf': () => perf('/scripts/manifest.virtual.js'),
                 '/perf-baseline': () => perf('/baseline/scripts/manifest.virtual.js'),
             }[u.pathname]
@@ -281,6 +291,30 @@ async function main() {
             const observed = await q.evaluate(() => window.__observed)
             check(observed === 0 && (await q.evaluate(() => T.rows().length)) > 0, '/masonry with a height function: items are not observed or measured', observed)
             await q.close()
+        }
+
+        // A long-lived list with churn: the height store stays bounded by the list, not by every key ever seen
+        {
+            const p = await open('/churn')
+            const sizes = await p.evaluate(async () => {
+                const out = []
+                for (let g = 0; g < 150; g++) { T.data().page(100, 30); await frames_(3); if (g % 50 === 49) out.push(heightStore()) }
+                return out
+            })
+            check(sizes.every((n) => n > 0 && n <= 2 * 100 + 100 + 30), 'churn: 150 replaced pages keep the height store bounded', sizes)
+            // Stale keys stop counting toward the estimate for unmeasured rows
+            // A page of 600 tall rows, all rendered once (a container tall enough for them) so all are measured
+            await p.evaluate(async () => { T.data().page(600, 100); await frames_(3); T.v().style.height = '70000px' })
+            await wait(400)
+            const measured = await p.evaluate(async () => { await frames_(6); const n = heightStore(); T.v().style.height = '300px'; return n })
+            await wait(400)
+            check(measured >= 600, 'churn: the tall page was measured in full (setup)', measured)
+            await p.evaluate(async () => { T.data().page(200, 20); await frames_(8) })
+            await settle(p)
+            const total = await p.evaluate(() => T.v().scrollHeight)
+            check(total === 200 * 20, 'churn: after a page of new keys, unmeasured rows are estimated from live rows only', { total, expected: 200 * 20 })
+            check(p.errors.length === 0, 'churn: no page errors', p.errors)
+            await p.close()
         }
 
         // Main-thread task time (CDP), so the numbers do not depend on the frame rate
