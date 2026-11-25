@@ -2092,7 +2092,7 @@ window.ManifestDataStore = {
         try { return JSON.stringify(source.queries || '').includes('$auth.'); } catch { return false; }
     }
 
-    // Team-scoped sources stamp the team their rows were read for; another team's snapshot never hydrates
+    // Team-scoped sources stamp the team their rows were read for; once a team is known, another team's snapshot is skipped
     function isTeamScoped(source) {
         const scope = source && typeof source === 'object' ? source.scope : null;
         return scope === 'team' || scope === 'teams' || (Array.isArray(scope) && (scope.includes('team') || scope.includes('teams')));
@@ -2361,6 +2361,7 @@ window.ManifestDataStore = {
         state.generation++;
         cancelWrites();
         state.hydrated.clear();
+        state.teamRejected.clear();
         state.fetchKicked.clear();
         // pending → resolved is boot, not a switch: rows loaded meanwhile stay (hydrate skips fresh sources), nothing is wiped
         if (!wasPending) {
@@ -2634,6 +2635,7 @@ window.ManifestDataStore = {
         const known = identity !== null;
         if (known && identity !== state.hydratedIdentity) {
             for (const [source, cfg] of state.sources) if (cfg.authDependent) state.hydrated.delete(source);
+            state.teamRejected.clear();
             state.hydratedIdentity = identity;
         }
         const pending = sources.filter(source => state.sources.has(source) && !state.hydrated.has(source)
