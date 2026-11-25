@@ -29,10 +29,6 @@
     window.ManifestComponentsSwapping = {
         // Swap in source code for a placeholder
         async swapIn(placeholder) {
-            if (placeholder.hasAttribute('data-swapped')) {
-                console.debug('[Manifest Components] skipped swapIn: already marked data-swapped', placeholder);
-                return;
-            }
             const processor = window.ManifestComponentsProcessor;
             if (!processor) {
                 console.debug('[Manifest Components] skipped swapIn: processor unavailable', placeholder);
