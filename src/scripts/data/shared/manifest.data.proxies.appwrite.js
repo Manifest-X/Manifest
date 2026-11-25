@@ -416,15 +416,16 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         queries = named;
                     }
                     window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
-                    // Team listener waits until this $query has picked its team, then compares
-                    const closeTeamRead = window.ManifestDataStore?.beginTeamRead?.(dataSourceName) || (() => {});
-                    const noteTeam = (team) => { if (team !== undefined) window.ManifestDataStore?.noteLoadTeam?.(dataSourceName, team); closeTeamRead(); };
+                    // Team listener waits while this $query builds; its landing records the team the build used
+                    const teamRead = window.ManifestDataStore?.beginTeamRead?.(dataSourceName) || { building() {}, built() {}, end() {} };
+                    let builtTeam;
+                    const noteTeam = (team) => { builtTeam = team; teamRead.built(team); };
                     try {
                         // A $auth. value or scope not resolved yet: wait for auth once, then run
                         const build = () => window.ManifestDataQueries.buildAppwriteQueries(queries || [], scope, scopeColumns);
                         let appwriteQueries = await build();
                         if (appwriteQueries === null) {
-                            closeTeamRead();
+                            noteTeam(undefined);
                             const waiting = window.ManifestDataMain?.awaitingQueries;
                             waiting?.add(dataSourceName);
                             try {
@@ -437,6 +438,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                             }
                             readToken = window.ManifestDataStore?.beginRead?.(dataSourceName);
                             window.ManifestDataStore?.setSourceState?.(dataSourceName, { loading: true });
+                            teamRead.building();
                             appwriteQueries = await build();
                         }
                         if (appwriteQueries === null) {
@@ -461,7 +463,7 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                                     onTeam: noteTeam
                                 });
                                 paged = await fetchPaged();
-                                if (paged === null) { await main.waitForAuthChange(); paged = await fetchPaged(); }
+                                if (paged === null) { noteTeam(undefined); await main.waitForAuthChange(); teamRead.building(); paged = await fetchPaged(); }
                                 if (paged === null) throw new Error(`[Manifest Data] "${dataSourceName}" $query: auth not ready yet — retry after auth settles`);
                                 return paged.rows;
                             }
@@ -478,11 +480,11 @@ function createAppwriteMethodsHandler(dataSourceName, reloadDataSource) {
                         if (result !== undefined && landRows && latest && sourceGeneration?.(dataSourceName) === generation) {
                             window.ManifestDataMain?.setActiveQuery?.(dataSourceName, queries || [], Array.isArray(result) ? result.length : 0);
                             if (paged) main.setPagingState(dataSourceName, { ...paged, spec }, { filters: queries || [] });
-                            await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation, readToken });
+                            await landRows(dataSourceName, result, { mode: 'replace', fresh: true, generation, readToken, ...(builtTeam === undefined ? {} : { scopeTeam: builtTeam }) });
                         }
                         return result;
                     } finally {
-                        closeTeamRead();
+                        teamRead.end();
                     }
                 }
             }

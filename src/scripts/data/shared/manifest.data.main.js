@@ -699,7 +699,7 @@ async function loadMoreOnce(dataSourceName) {
         // Overtaken by a load or $query: its window replaces the rows, then this runs again
         if (!page || !isCurrent()) { if (page) requeueMore(dataSourceName); return 0; }
         // Skipped (a newer read began): the cursor stays; this runs again after that read
-        if (await landRows(dataSourceName, page.rows, { mode: 'append', generation, readToken: read, order: state.order || undefined }) === false) {
+        if (await landRows(dataSourceName, page.rows, { mode: 'append', generation, readToken: read, order: state.order || undefined, ...(page.team !== undefined && { appendTeam: page.team }) }) === false) {
             if (sourceGeneration(dataSourceName) === generation) requeueMore(dataSourceName);
             return 0;
         }
@@ -1105,7 +1105,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
         const staleLocaleHit = locale !== live && !!(cachedData && cachedData._locale);
         if (!isInitializing && !staleLocaleHit) {
             // Landing (coalesced): resolves once the cached rows are visible
-            await landRows(dataSourceName, cachedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true });
+            const cachedTeam = cachedData && typeof cachedData === 'object' && 'scopeTeam' in cachedData ? { scopeTeam: cachedData.scopeTeam } : {};
+            await landRows(dataSourceName, cachedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, ...cachedTeam });
         }
         return cachedData;
     }
@@ -1161,10 +1162,12 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     const generation = sourceGeneration ? sourceGeneration(dataSourceName) : 0;
     const load = { identity: confirmedIdentity(), bound: undefined, abandoned: false, replacement: null };
     loadIdentities.set(cacheKey, load);
-    // Team listener waits for this load to pick its team instead of reloading under it
-    const closeTeamRead = window.ManifestDataStore.beginTeamRead?.(dataSourceName) || (() => {});
-    // team: what the scope build used (undefined: nothing read, nothing recorded)
-    const noteTeam = (team) => { if (team !== undefined) window.ManifestDataStore.noteLoadTeam?.(dataSourceName, team); closeTeamRead(); };
+    // Team listener waits while this read builds; its landing records the team the build used
+    const teamRead = window.ManifestDataStore.beginTeamRead?.(dataSourceName) || { building() {}, built() {}, end() {} };
+    let builtTeam;
+    // team: what the scope build used (undefined: nothing sent)
+    const noteTeam = (team) => { builtTeam = team; teamRead.built(team); };
+    const teamLanding = () => (builtTeam === undefined ? {} : { scopeTeam: builtTeam });
     const superseded = () => load.abandoned || (sourceGeneration && sourceGeneration(dataSourceName) !== generation);
 
     // Unresolvable scope (signed out, or teamless): settle empty, not $loading forever; auth events reload.
@@ -1177,6 +1180,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 const state = Alpine.store('data')?.[`_${dataSourceName}_state`];
                 if (state?.ready || superseded() || !authSettledSignedOut()) return;
                 updateStore(dataSourceName, [], { loading: false, error: null, ready: true });
+                window.ManifestDataStore.clearLoadTeam?.(dataSourceName);
             }, wait + 10);
             return false;
         }
@@ -1187,6 +1191,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             return true;
         }
         updateStore(dataSourceName, [], { loading: false, error: null, ready: true });
+        window.ManifestDataStore.clearLoadTeam?.(dataSourceName);
         return true;
     };
 
@@ -1277,7 +1282,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         ? (paged ? [] : null)
                         : await window.ManifestDataQueries.buildAppwriteQueries(defaults, scope, scopeColumns);
 
-                    noteTeam(spec ? undefined : queries?.scopeTeam);
+                    // Paged: onTeam already noted the build (or nothing was sent)
+                    if (!spec) noteTeam(queries?.scopeTeam); else if (!paged) noteTeam(undefined);
                     // Not ready (auth/scope unresolved): skip this read, retry on an auth event
                     if (queries === null) {
                         scheduleAuthRetry(dataSourceName, locale);
@@ -1508,7 +1514,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 return enhancedData;
             }
 
-            // Cache is always safe — the key carries this load's locale.
+            // Cache is always safe — the key carries this load's locale (and the team it was built for)
+            if (builtTeam !== undefined && enhancedData && typeof enhancedData === 'object') window.ManifestDataQueries?.tagTeam?.(enhancedData, builtTeam);
             dataSourceCache.set(cacheKey, enhancedData);
 
             // Stale-locale guard: if the locale changed mid-load, a localized
@@ -1526,7 +1533,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 landed = true;
                 clearActiveQuery(dataSourceName, Array.isArray(enhancedData) ? enhancedData.length : 0);
                 if (pagedResult) setPagingState(dataSourceName, pagedResult, { filters: pagedResult.filters });
-                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, generation, readToken });
+                await landRows(dataSourceName, enhancedData, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, generation, readToken, ...teamLanding() });
             }
 
             // Return unsealed version for our proxy system
@@ -1549,6 +1556,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                         ready: false,
                         errorTime: Date.now() // Track when error occurred
                     });
+                    window.ManifestDataStore.clearLoadTeam?.(dataSourceName);
                 }
             }
 
@@ -1567,7 +1575,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
             if (!landed && keepRows && !isInitializing && !superseded()) setSourceState(dataSourceName, { loading: false });
         }
     });
-    const done = () => { closeTeamRead(); settled(); deferredLoads.delete(cacheKey); if (loadIdentities.get(cacheKey) === load) loadIdentities.delete(cacheKey); };
+    const done = () => { teamRead.end(); settled(); deferredLoads.delete(cacheKey); if (loadIdentities.get(cacheKey) === load) loadIdentities.delete(cacheKey); };
     run.then(done, done);
     const result = followReplacement(load, run);
     if (replaced) replaced.replacement = result;

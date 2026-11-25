@@ -278,25 +278,50 @@ function sourceGeneration(dataSourceName) {
     return sourceGen.get(dataSourceName) || 0;
 }
 
-// Team each source last read under, and loads that have not picked their team yet
+// Team of the rows each source shows: written only when a read's rows land (scopeTeam landing option)
 const loadTeams = new Map();
-const teamPending = new Map();
+// Rows from reads built for different teams (a page appended across a switch): never current
+const MIXED_TEAMS = Symbol('mixed');
+// Reads in flight per source: { team } — undefined until the scope build, SKIPPED when nothing was sent
+const teamReads = new Map();
+const SKIPPED = Symbol('skipped');
 function teamNow() {
     const team = typeof Alpine !== 'undefined' ? Alpine.store('auth')?.currentTeam : null;
     return team?.$id || team?.id || null;
 }
-// teamId: the team the read's own scope build used
-function noteLoadTeam(dataSourceName, teamId) { loadTeams.set(dataSourceName, teamId); }
-// Returns a close function: call it once the load has read (or given up)
+// Rows emptied without a read (unresolved scope, failed first load): no team to compare
+function clearLoadTeam(dataSourceName) { loadTeams.delete(dataSourceName); }
+function loadTeamOf(dataSourceName) {
+    const team = loadTeams.get(dataSourceName);
+    return team === MIXED_TEAMS ? undefined : team;
+}
+// A read's handle: building() while it builds again, built(team) after its scope build, end() when it settles
 function beginTeamRead(dataSourceName) {
-    teamPending.set(dataSourceName, (teamPending.get(dataSourceName) || 0) + 1);
-    let open = true;
-    return () => {
-        if (!open) return;
-        open = false;
-        const n = (teamPending.get(dataSourceName) || 1) - 1;
-        if (n > 0) teamPending.set(dataSourceName, n); else teamPending.delete(dataSourceName);
+    const read = { team: undefined };
+    let reads = teamReads.get(dataSourceName);
+    if (!reads) teamReads.set(dataSourceName, reads = new Set());
+    reads.add(read);
+    return {
+        building() { read.team = undefined; },
+        built(team) { read.team = team === undefined ? SKIPPED : team; },
+        end() {
+            reads.delete(read);
+            if (!reads.size && teamReads.get(dataSourceName) === reads) teamReads.delete(dataSourceName);
+        }
     };
+}
+// A read still building, or built for this team, will land (or settle) first
+function teamReadHolds(dataSourceName, team) {
+    const reads = teamReads.get(dataSourceName);
+    if (!reads) return false;
+    for (const read of reads) if (read.team === undefined || read.team === team) return true;
+    return false;
+}
+// Applied landing: a replace sets the team; an append built for another team mixes it
+function recordLandedTeam(source, options) {
+    if (!options) return;
+    if ('scopeTeam' in options) loadTeams.set(source, options.scopeTeam);
+    else if ('appendTeam' in options && loadTeams.has(source) && loadTeams.get(source) !== options.appendTeam) loadTeams.set(source, MIXED_TEAMS);
 }
 
 // Drop a source from memory (rows, caches, in-flight keys, freshness): the
@@ -820,6 +845,7 @@ function flushLandings() {
                 if (typeof op.options?.readToken === 'number' && !isLatestRead(op.source, op.options.readToken)) { skipped.add(op); continue; }
                 const state = writeSource(op.source, group.rows, op.options);
                 if (!state) continue;
+                recordLandedTeam(op.source, op.options);
                 touched.add(op.source);
                 if (!op.options.persistHydration && op.rows !== null && op.rows !== undefined) landed.add(op.source);
                 // Only load completions (explicit loading state) feed render-ready; realtime upserts never do
@@ -1208,8 +1234,8 @@ function setupTeamChangeListener() {
             const raw = rawOf(Alpine.store('data')) || {};
             let stale = null;
             for (const name of scoped) {
-                // A load in flight records the team its build reads
-                if (teamPending.has(name)) continue;
+                // A read still building, or built for this team, lands first
+                if (teamReadHolds(name, team)) continue;
                 if (loadTeams.has(name)) {
                     if (loadTeams.get(name) === team) continue;
                 } else {
@@ -1677,7 +1703,8 @@ window.ManifestDataStore = {
     sourceFreshness,
     // Persistence (§12.2)
     sourceGeneration,
-    noteLoadTeam,
+    clearLoadTeam,
+    loadTeamOf,
     beginTeamRead,
     isStaleWrite,
     resetSource,

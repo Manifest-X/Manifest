@@ -41,6 +41,7 @@
         landedIdentity: new Map(), // source -> identity its pending rows were read under
         writeTimer: null,
         hydrated: new Set(),   // sources hydrated (or attempted) this generation
+        teamRejected: new Map(), // source -> team its snapshot was refused under (retried under another team)
         hydratedIdentity: null, // identity auth-dependent hydration last ran under
         fetchKicked: new Set(),
         watching: false,
@@ -60,6 +61,16 @@
         if (!source || typeof source !== 'object') return false;
         if (source.scope || source.appwriteTableId || source.appwriteBucketId) return true;
         try { return JSON.stringify(source.queries || '').includes('$auth.'); } catch { return false; }
+    }
+
+    // Team-scoped sources stamp the team their rows were read for; another team's snapshot never hydrates
+    function isTeamScoped(source) {
+        const scope = source && typeof source === 'object' ? source.scope : null;
+        return scope === 'team' || scope === 'teams' || (Array.isArray(scope) && (scope.includes('team') || scope.includes('teams')));
+    }
+    function currentTeamId() {
+        const team = (typeof Alpine !== 'undefined' && Alpine.store) ? Alpine.store('auth')?.currentTeam : null;
+        return team?.$id || team?.id || null;
     }
 
     // Current identity: '' signed out (or no auth plugin), null while auth is still booting
@@ -156,7 +167,7 @@
         for (const [name, source] of Object.entries(manifest?.data || {})) {
             if (!source || typeof source !== 'object') continue;
             const cfg = normalizeConfig(source.persist);
-            if (cfg) { cfg.authDependent = isAuthDependent(source); state.sources.set(name, cfg); }
+            if (cfg) { cfg.authDependent = isAuthDependent(source); cfg.teamScoped = isTeamScoped(source); state.sources.set(name, cfg); }
         }
         state.scopeExpr = typeof manifest?.persistence?.scope === 'string' && manifest.persistence.scope.trim()
             ? manifest.persistence.scope.trim() : null;
@@ -195,6 +206,7 @@
         const cfg = normalizeConfig(config === undefined ? true : config);
         if (!cfg) { state.sources.delete(source); return false; }
         cfg.authDependent = isAuthDependent(state.manifest?.data?.[source] || state.manifest?.appwrite?.[source]);
+        cfg.teamScoped = isTeamScoped(state.manifest?.data?.[source] || state.manifest?.appwrite?.[source]);
         state.sources.set(source, cfg);
         state.hydrated.delete(source);
         state.fetchKicked.delete(source);
@@ -480,6 +492,8 @@
             identity = authUnverified() ? null : authIdentity();
             if (identity === null || landed === null || (landed !== undefined && landed !== identity)) return null;
         }
+        // The team of the landed rows (the store records it per landing); unknown → unstamped
+        const team = cfg.teamScoped ? ds.loadTeamOf?.(source) : undefined;
         try {
             const snapshot = snapshotOf(source, raw, cfg);
             if (snapshot === null) return null;
@@ -492,7 +506,8 @@
                 frameworkVersion: state.frameworkVersion,
                 deployment: state.deployment,
                 locale: liveLocale(),
-                ...(cfg.authDependent ? { identity } : {})
+                ...(cfg.authDependent ? { identity } : {}),
+                ...(team !== undefined ? { team } : {})
             };
         } catch (error) {
             warnOnce(`snapshot:${source}`, `persistence skipped "${source}" (rows are not serialisable)`, error);
@@ -573,6 +588,11 @@
             const identity = hydrationIdentity();
             if (identity === null || record.identity !== identity) return unconfirmed() ? { ok: false } : { ok: false, drop: true };
         }
+        // Another team's (or, with a team to compare, an unstamped) snapshot: kept for when that team is current again
+        if (cfg.teamScoped) {
+            const team = currentTeamId();
+            if (team !== null && (!('team' in record) || record.team !== team)) return { ok: false, retry: true };
+        }
         return { ok: true };
     }
 
@@ -588,7 +608,8 @@
             state.hydratedIdentity = identity;
         }
         const pending = sources.filter(source => state.sources.has(source) && !state.hydrated.has(source)
-            && (known || !state.sources.get(source).authDependent));
+            && (known || !state.sources.get(source).authDependent)
+            && !(state.teamRejected.has(source) && state.teamRejected.get(source) === currentTeamId()));
         if (!ds || !pending.length || !state.enabled || state.disabled || state.scopePending) return;
         for (const source of pending) state.hydrated.add(source);
         const generation = state.generation;
@@ -602,11 +623,17 @@
             const record = records[i];
             if (!cfg || !record) return;
             const check = validRecord(record, cfg);
-            if (!check.ok) { if (check.drop) drop.push(record.key); return; }
+            if (!check.ok) {
+                if (check.drop) drop.push(record.key);
+                if (check.retry) { state.hydrated.delete(source); state.teamRejected.set(source, currentTeamId()); }
+                return;
+            }
+            state.teamRejected.delete(source);
             if (ds.sourceFreshness(source).done) return; // fresh landing already applied
             cfg.rows = Array.isArray(record.rows) ? record.rows.length : 1;
             cfg.savedAt = record.savedAt;
-            landings.push(ds.landRows(source, record.rows, { mode: 'replace', ready: true, fresh: false, persistHydration: true, allowDuringInit: true }));
+            const team = cfg.teamScoped && 'team' in record ? { scopeTeam: record.team } : {};
+            landings.push(ds.landRows(source, record.rows, { mode: 'replace', ready: true, fresh: false, persistHydration: true, allowDuringInit: true, ...team }));
         });
         if (drop.length) deleteKeys(drop).catch(() => { /* disabled */ });
         await Promise.all(landings);
