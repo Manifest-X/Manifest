@@ -187,4 +187,40 @@ describe('late on-use modules', () => {
         await settle()
         expect(document.getElementById('rs').textContent).toBe('has')
     })
+
+    it('state typed while held is put back once it starts; nothing can leave the page held', async () => {
+        document.getElementById('host').insertAdjacentHTML('beforeend', `<div id="fw" x-data="{ t: 'init', lazy: 'l0', many: [], root: 'r0' }">
+            <section x-virtual><input id="ht" x-model="t"><input id="hl" x-model.lazy="lazy"><select id="hm" multiple x-model="many"><option>a</option><option>b</option><option>c</option></select><input id="hf" type="file"><input id="hx"></section>
+            <input id="hr" x-code-group x-model="root">
+            <div id="gone" x-ref="gone" x-code-group></div>
+        </div>`)
+        await settle()
+        expect(window.ManifestPending.labels()).toContain('held')
+        document.getElementById('ht').value = 'typed'
+        document.getElementById('hl').value = 'lazy typed'
+        const opts = document.getElementById('hm').options
+        opts[0].selected = true; opts[2].selected = true
+        document.getElementById('hr').value = 'root typed'
+        // A control whose restore throws
+        Object.defineProperty(document.getElementById('hx'), 'value', { get: () => 'x', set: () => { throw new Error('boom') }, configurable: true })
+        document.getElementById('gone').remove()
+        Alpine.directive('virtual', () => { })
+        Alpine.directive('code-group', () => { })
+        Alpine.directive('colorpicker', () => { })
+        await settle()
+        const d = Alpine.$data(document.getElementById('fw'))
+        expect([d.t, d.lazy, Alpine.raw(d.many), d.root]).toEqual(['typed', 'lazy typed', ['a', 'c'], 'root typed'])
+        expect(window.ManifestPending.labels()).not.toContain('held')
+        expect(Alpine.evaluate(document.getElementById('fw'), '$refs.gone')).toBeUndefined()
+    })
+
+    it('a restore that throws still releases the hold', async () => {
+        document.getElementById('host').insertAdjacentHTML('beforeend', '<div id="tw" x-data><section x-markdown="m"><input id="tx"></section></div>')
+        await settle()
+        expect(window.ManifestPending.labels()).toContain('held')
+        Object.defineProperty(document.getElementById('tx'), 'value', { get: () => 'x', set: () => { throw new Error('boom') }, configurable: true })
+        Alpine.directive('markdown', () => { })
+        await settle()
+        expect(window.ManifestPending.labels()).not.toContain('held')
+    })
 })

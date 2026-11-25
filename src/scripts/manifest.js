@@ -959,22 +959,30 @@
 	let heldRelease = null;
 	// Rendered from source: hidden while held so raw markdown/code never shows
 	const RENDERS = ['markdown', 'code', 'svg'];
-	// Form state typed while held, put back after start so x-model takes it
+	// Form state typed while held, put back after start so x-model takes it (a real edit: input, then change)
 	function snapshot(root) {
 		const typed = [];
-		for (const c of root.querySelectorAll('input, textarea, select')) {
-			if (c.type === 'checkbox' || c.type === 'radio') { if (c.checked !== c.defaultChecked) typed.push([c, 'checked', c.checked]); }
-			else if (c.tagName === 'SELECT') { if ([...c.options].some(o => o.selected !== o.defaultSelected)) typed.push([c, 'value', c.value]); }
-			else if (c.value !== c.defaultValue) typed.push([c, 'value', c.value]);
+		const controls = root.matches('input, textarea, select') ? [root] : [];
+		controls.push(...root.querySelectorAll('input, textarea, select'));
+		for (const c of controls) {
+			try {
+				if (c.type === 'file') continue;
+				if (c.type === 'checkbox' || c.type === 'radio') { if (c.checked !== c.defaultChecked) typed.push([c, 'checked', c.checked]); }
+				else if (c.tagName === 'SELECT') { const sel = [...c.options].map(o => o.selected); if (sel.some((s, i) => s !== c.options[i].defaultSelected)) typed.push([c, 'options', sel]); }
+				else if (c.value !== c.defaultValue) typed.push([c, 'value', c.value]);
+			} catch (_) { /* skipped */ }
 		}
 		const a = document.activeElement;
 		const focus = a && root.contains(a) ? [a, a.selectionStart, a.selectionEnd] : null;
 		return () => {
 			for (const [c, k, v] of typed) {
-				if (!c.isConnected) continue;
-				c[k] = v;
-				c.dispatchEvent(new Event('input', { bubbles: true }));
-				if (k === 'checked' || c.tagName === 'SELECT') c.dispatchEvent(new Event('change', { bubbles: true }));
+				try {
+					if (!c.isConnected) continue;
+					if (k === 'options') [...c.options].forEach((o, i) => { o.selected = !!v[i]; });
+					else c[k] = v;
+					c.dispatchEvent(new Event('input', { bubbles: true }));
+					c.dispatchEvent(new Event('change', { bubbles: true }));
+				} catch (_) { /* skipped */ }
 			}
 			if (focus && focus[0].isConnected) {
 				try { focus[0].focus({ preventScroll: true }); if (focus[1] != null) focus[0].setSelectionRange(focus[1], focus[2]); } catch (_) { }
@@ -987,15 +995,30 @@
 		const name = u.attr.slice(2);
 		heldEls.add(el);
 		if (!heldCount++ && window.ManifestPending) heldRelease = window.ManifestPending.hold('held');
-		// $refs read during the hold caches its proxy: give the outer root its refs object now
-		const root = !el.hasAttribute('x-data') && el.parentElement && el.parentElement.closest('[x-data]');
-		if (root) {
-			if (!root._x_refs) root._x_refs = {};
-			// Its refs inside the held subtree resolve during the hold too (x-ref sets the same entry on start)
-			for (const r of [el, ...el.querySelectorAll('[x-ref]')]) if (r.hasAttribute('x-ref') && r.closest('[x-data]') === root && !root._x_refs[r.getAttribute('x-ref')]) root._x_refs[r.getAttribute('x-ref')] = r;
-		}
-		const hidden = RENDERS.includes(u.plugin) ? el.style.opacity : null;
-		if (hidden !== null) el.style.opacity = '0';
+		// Once per hold, whatever throws on the way
+		let released = false;
+		const release = () => {
+			if (released) return;
+			released = true;
+			heldEls.delete(el);
+			if (!--heldCount && heldRelease) { const r = heldRelease; heldRelease = null; r(); }
+		};
+		const early = [];
+		let hidden = null;
+		try {
+			// $refs read during the hold caches its proxy: give the outer root its refs object now
+			const root = !el.hasAttribute('x-data') && el.parentElement && el.parentElement.closest('[x-data]');
+			if (root) {
+				if (!root._x_refs) root._x_refs = {};
+				// Its refs inside the held subtree resolve during the hold too (x-ref sets the same entry on start)
+				for (const r of [el, ...el.querySelectorAll('[x-ref]')]) {
+					const ref = r.getAttribute('x-ref');
+					if (ref && r.closest('[x-data]') === root && !root._x_refs[ref]) { root._x_refs[ref] = r; early.push([root, ref, r]); }
+				}
+			}
+			hidden = RENDERS.includes(u.plugin) ? el.style.opacity : null;
+			if (hidden !== null) el.style.opacity = '0';
+		} catch (_) { /* best effort */ }
 		const ready = new Promise((resolve) => {
 			let started = false;
 			whenRegistered(name).then(() => { started = true; resolve(); });
@@ -1009,16 +1032,19 @@
 			// Loaded but never registered (e.g. its own vendor file failed): don't hold forever
 			load.then(() => setTimeout(() => giveUp('has not started 10 s after loading'), 10000), () => { });
 		});
-		A.deferInit(el, ready.then(() => {
-			heldEls.delete(el);
-			if (hidden !== null) el.style.opacity = hidden;
-			const restore = snapshot(el);
+		const start = ready.then(() => {
+			let restore = null;
+			try {
+				heldEls.delete(el);
+				if (hidden !== null) el.style.opacity = hidden;
+				// Refs set early for elements removed before start: gone, as if never started
+				for (const [root, ref, r] of early) if (!r.isConnected && root._x_refs && root._x_refs[ref] === r) delete root._x_refs[ref];
+				restore = snapshot(el);
+			} catch (_) { /* start anyway */ }
 			// After Alpine's start of the element (same turn), so typed values win over the model's initial one
-			setTimeout(() => {
-				restore();
-				if (!--heldCount && heldRelease) { heldRelease(); heldRelease = null; }
-			}, 0);
-		}));
+			setTimeout(() => { try { if (restore) restore(); } finally { release(); } }, 0);
+		});
+		try { A.deferInit(el, start); } catch (e) { release(); throw e; }
 		return true;
 	}
 	let lateArmed = false;
@@ -1036,14 +1062,16 @@
 				const els = reset.get(name);
 				if (els) {
 					reset.delete(name);
-					setTimeout(() => els.forEach(([el, attr]) => { if (el.isConnected && el.hasAttribute(attr)) el.setAttribute(attr, el.getAttribute(attr)); }), 0);
+					setTimeout(() => els.forEach(([ref, attr]) => { const el = deref(ref); try { if (el && el.isConnected && el.hasAttribute(attr)) el.setAttribute(attr, el.getAttribute(attr)); } catch (_) { } }), 0);
 				}
 			}
 			return out;
 		};
 		if (typeof A.interceptInit === 'function') {
 			const canHold = typeof A.deferInit === 'function';
-			const intercept = (el) => {
+			// Never breaks Alpine's walk: an element that cannot be held is started as usual
+			const intercept = (el) => { try { check(el); } catch (_) { /* not held */ } };
+			const check = (el) => {
 				if (heldEls.has(el)) return;
 				for (const attr of el.attributes) {
 					const u = lateDirective(attr.name);
@@ -1059,11 +1087,15 @@
 		}
 		armStandIns(A, magic);
 	}
+	const deref = (r) => r && typeof r.deref === 'function' ? r.deref() : r;
 	function note(u, el, attr) {
 		const name = u.attr.slice(2);
 		if (registered.has(name)) return;
 		if (!reset.has(name)) reset.set(name, []);
-		reset.get(name).push([el, attr]);
+		// Weakly held: elements removed for good (route swaps) are not kept alive until it registers
+		const list = reset.get(name).filter(([ref]) => deref(ref));
+		list.push([typeof WeakRef === 'function' ? new WeakRef(el) : el, attr]);
+		reset.set(name, list);
 	}
 	// Forwarding stand-in for a magic whose module has not registered yet
 	function armStandIns(A, magic) {
