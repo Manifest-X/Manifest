@@ -963,11 +963,16 @@
 		heldEls.add(el);
 		if (!heldCount++ && window.ManifestPending) heldRelease = window.ManifestPending.hold('held');
 		const ready = new Promise((resolve) => {
-			whenRegistered(name).then(resolve);
-			load.catch(() => {
-				if (!warnedLate.has(u.plugin)) { warnedLate.add(u.plugin); console.warn(`[Manifest Loader] ${u.plugin} failed to load; starting the elements that use it without it.`); }
+			let started = false;
+			whenRegistered(name).then(() => { started = true; resolve(); });
+			const giveUp = (why) => {
+				if (started) return;
+				if (!warnedLate.has(u.plugin)) { warnedLate.add(u.plugin); console.warn(`[Manifest Loader] ${u.plugin} ${why}; starting the elements that use it without it.`); }
 				resolve();
-			});
+			};
+			load.catch(() => giveUp('failed to load'));
+			// Loaded but never registered (e.g. its own vendor file failed): don't hold forever
+			load.then(() => setTimeout(() => giveUp('loaded but did not start'), 10000), () => { });
 		});
 		A.deferInit(el, ready.then(() => {
 			heldEls.delete(el);
