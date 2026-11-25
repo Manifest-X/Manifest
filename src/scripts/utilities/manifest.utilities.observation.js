@@ -28,7 +28,8 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
                 if (mutation.target.nodeType === Node.ELEMENT_NODE && this.collectNewClasses(mutation.target, false, true)) fresh = true;
             } else if (mutation.type === 'childList') {
                 for (const node of mutation.addedNodes) {
-                    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+                    // Tailwind cache's engine carrier: not page content
+                    if (node.nodeType !== Node.ELEMENT_NODE || node.hasAttribute('data-tailwind-seed')) continue;
                     const isIgnoredElement = this.ignoredElementSelectors.some(selector =>
                         node.tagName?.toLowerCase() === selector.toLowerCase() ||
                         node.closest(selector)

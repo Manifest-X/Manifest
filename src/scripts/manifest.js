@@ -1400,6 +1400,8 @@
 		const plugins = script.getAttribute('data-modules') ?? script.getAttribute('data-plugins');
 		const omit = script.getAttribute('data-omit');
 		const tailwind = script.getAttribute('data-tailwind') !== null;
+		// data-tailwind="cache": opt in to replaying the engine's stored output
+		const tailwindCache = script.getAttribute('data-tailwind') === 'cache';
 		const version = script.getAttribute('data-version') || DEFAULT_VERSION;
 		const versionSet = !!script.getAttribute('data-version');
 		const alpine = script.getAttribute('data-alpine');
@@ -1457,6 +1459,7 @@
 			omitted,
 			deriveFromManifest,
 			tailwind,
+			tailwindCache,
 			version,
 			versionSet,
 			alpine,
@@ -1484,6 +1487,112 @@
 		} catch (e) {
 			return false;
 		}
+	}
+
+	// Tailwind engine output cache: written and watched by the utilities module (manifest.utilities.tailwind-cache.js)
+	const TAILWIND_ENGINE_VERSION = '';
+	const TAILWIND_CACHE_KEY = 'tailwind-engine-cache:v2';
+	const TAILWIND_CACHE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+	function tailwindAuthorBlocks() {
+		return Array.from(document.querySelectorAll('style[type="text/tailwindcss"]:not(#manifest-tailwind-variants)'), s => s.textContent);
+	}
+	// One entry per ordered set of author blocks
+	function tailwindCacheId(v, blocks) {
+		const text = [v, ...blocks].join('\u0000');
+		let h = 0x811c9dc5;
+		for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+		return (h >>> 0).toString(36);
+	}
+	function placeTailwindCache(style) {
+		const ours = document.getElementById('manifest-styles');
+		document.head.insertBefore(style, ours && ours.parentNode === document.head ? ours : null);
+	}
+	const allStrings = (a) => Array.isArray(a) && a.every(x => typeof x === 'string');
+	// Head fully parsed: replay only an entry built from exactly these blocks, in this order
+	function tryTailwindReplay(state, index) {
+		try {
+			// A page that turned out to need a block in <body> goes straight to the engine
+			const skipped = index.skip && index.skip[state.pathId];
+			if (typeof skipped === 'number' && Date.now() - skipped >= 0 && Date.now() - skipped <= TAILWIND_CACHE_MAX_AGE) return false;
+			const blocks = tailwindAuthorBlocks();
+			const id = tailwindCacheId(state.v, blocks);
+			const rec = JSON.parse(localStorage.getItem(`${TAILWIND_CACHE_KEY}:${id}`) || 'null');
+			const age = rec ? Date.now() - rec.t : -1;
+			if (!rec || rec.v !== state.v || typeof rec.css !== 'string' || !allStrings(rec.tokens) || !allStrings(rec.blocks)) return false;
+			if (!(age >= 0 && age <= TAILWIND_CACHE_MAX_AGE) || rec.blocks.join('\u0000') !== blocks.join('\u0000') || rec.blocks.length !== blocks.length) return false;
+			if (rec.body) return false;
+			const style = document.createElement('style');
+			style.setAttribute('data-tailwind-cache', '');
+			style.textContent = rec.css;
+			placeTailwindCache(style);
+			Object.assign(state, { record: rec, style, id });
+			return true;
+		} catch (e) {
+			return false;
+		}
+	}
+	// Resolves true once the stored output is where the engine's sheet would go; decided when <head> is parsed, before first paint.
+	// A <body> block, or a pathname skipped in the last 7 days, means the engine (SPA routes keep the first pathname's decision)
+	function replayTailwindCache(cfg) {
+		const miss = Promise.resolve(false);
+		try {
+			if (!cfg.tailwindCache || window.__manifestRender === true || window.__mnfstRun || isDevHost(location.hostname)) return miss;
+			if (!cfg.plugins.includes('utilities') || staticUtilitiesFullyCovered()) return miss;
+			if (document.querySelector('[data-mnfst-utilities], link[href*="prerender.tailwind.css"], link[href*="prerender.utilities.css"]')) return miss;
+			const v = `${LOADER_VERSION}|${cfg.version}|${TAILWIND_ENGINE_VERSION}`;
+			const state = window.__tailwindCache = { key: TAILWIND_CACHE_KEY, v, idFor: (blocks) => tailwindCacheId(v, blocks), pathId: tailwindCacheId('', [location.pathname]), record: null, armed: false };
+			const index = JSON.parse(localStorage.getItem(TAILWIND_CACHE_KEY) || 'null');
+			if (!index || !allStrings(index.ids) || !index.ids.length) return miss;
+			return state.decision = new Promise(resolve => {
+				let done = false;
+				const decide = () => {
+					if (done) return;
+					done = true;
+					const hit = tryTailwindReplay(state, index);
+					if (hit) watchParsedTailwindBlocks(state, cfg.version);
+					resolve(hit);
+				};
+				if (document.body) return decide();
+				const o = new MutationObserver(() => { if (document.body) { o.disconnect(); decide(); } });
+				o.observe(document.documentElement, { childList: true });
+				document.addEventListener('DOMContentLoaded', () => { o.disconnect(); decide(); }, { once: true });
+			});
+		} catch (e) {
+			return miss;
+		}
+	}
+	// Until DOMContentLoaded: a parsed block the entry wasn't built from means it is another page's theme; engine now
+	function watchParsedTailwindBlocks(state, version) {
+		const o = new MutationObserver((records) => {
+			for (const r of records) {
+				for (const n of r.addedNodes) {
+					if (n.localName !== 'style' || n.getAttribute('type') !== 'text/tailwindcss' || n.id === 'manifest-tailwind-variants') continue;
+					const blocks = tailwindAuthorBlocks();
+					if (blocks.length <= state.record.blocks.length && blocks.every((b, i) => b === state.record.blocks[i])) continue;
+					o.disconnect();
+					if (state.style) state.style.remove();
+					Object.assign(state, { style: null, parsedMismatch: true });
+					state.load = loadTailwind(version).catch(() => { });
+					return;
+				}
+			}
+		});
+		o.observe(document.documentElement, { childList: true, subtree: true });
+		document.addEventListener('DOMContentLoaded', () => o.disconnect(), { once: true });
+	}
+
+	// Where the eager engine would have landed (after the module wave), or the engine itself if nothing armed
+	function settleTailwindCache(version) {
+		const state = window.__tailwindCache;
+		if (!state || !state.style || !state.style.isConnected) return;
+		if (!state.armed) {
+			state.load = loadTailwind(version).catch(() => { });
+			return;
+		}
+		let next = state.style.nextElementSibling;
+		const isCss = (el) => (el.localName === 'style' && el.id !== 'manifest-styles' && el.getAttribute('type') !== 'text/tailwindcss') || (el.localName === 'link' && /\bstylesheet\b/i.test(el.rel));
+		while (next && !isCss(next)) next = next.nextElementSibling;
+		if (next) placeTailwindCache(state.style);
 	}
 
 	// Load custom Tailwind CDN script, falling through the CDN chain on error
@@ -1843,7 +1952,9 @@
 			// Content fetched before the document is parsed (components) loads its modules now
 			if (config.deriveFromManifest) { usageArmed = true; usageGate.resolve(); }
 			if (config.tailwind && !staticUtilitiesFullyCovered()) {
-				pluginPromises.push(loadTailwind(config.version).catch(() => { }));
+				pluginPromises.push(config.tailwindCache
+					? tailwindReplay.then(hit => hit ? null : loadTailwind(config.version)).catch(() => { })
+					: loadTailwind(config.version).catch(() => { }));
 			}
 			// Usage sniff once the document is parsed: on-use modules download alongside the
 			// rest and run before Alpine. Derive path only — an explicit data-modules list is an
@@ -1869,6 +1980,7 @@
 				resolve(Promise.all(late));
 			}));
 			await Promise.all(pluginPromises);
+			settleTailwindCache(config.version);
 			if (manifestPromise) {
 				manifest = await manifestPromise;
 			}
@@ -1928,6 +2040,7 @@
 			check();
 		}
 
+		const tailwindReplay = config.tailwindCache ? replayTailwindCache(config) : null;
 		hintEarlyFetches();
 		// Never leaves a loadUsed caller waiting, whatever stops the boot
 		loadPlugins().finally(() => { if (usageGate) usageGate.resolve(); });

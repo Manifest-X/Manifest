@@ -61,6 +61,7 @@ const CONFIG = {
         'manifest.utilities.static.js',
         'manifest.utilities.observation.js',
         'manifest.utilities.device.js',
+        'manifest.utilities.tailwind-cache.js',
         'manifest.utilities.init.js'
     ],
 
@@ -952,6 +953,10 @@ function vendorHashes() {
     return { core, family };
 }
 
+// Engine version, from the bundled engine's file name: part of the Tailwind output cache fingerprint
+const TAILWIND_ENGINE_VERSION = (CONFIG.dependencies.TAILWIND_V4_FILE.match(/v(\d+\.\d+\.\d+)/) || [])[1];
+if (!TAILWIND_ENGINE_VERSION) throw new Error('Tailwind engine version not found in TAILWIND_V4_FILE');
+
 // manifest.modules.integrity.json: what the loader injects; its hash and the version are stamped
 // into the loader. manifest.integrity.json: every browser file, loader included.
 async function emitIntegrity() {
@@ -972,8 +977,9 @@ async function emitIntegrity() {
     const loader = fs.readFileSync(loaderPath, 'utf8');
     const stamped = loader
         .replace("const LOADER_VERSION = '0.0.0-dev';", `const LOADER_VERSION = '${BUILD_VERSION}';`)
-        .replace("const MODULES_INTEGRITY = '';", `const MODULES_INTEGRITY = '${sri(modulesJson)}';`);
-    if (stamped === loader || !stamped.includes(sri(modulesJson))) throw new Error('loader integrity stamp markers not found');
+        .replace("const MODULES_INTEGRITY = '';", `const MODULES_INTEGRITY = '${sri(modulesJson)}';`)
+        .replace("const TAILWIND_ENGINE_VERSION = '';", `const TAILWIND_ENGINE_VERSION = '${TAILWIND_ENGINE_VERSION}';`);
+    if (stamped === loader || !stamped.includes(sri(modulesJson)) || !stamped.includes(`TAILWIND_ENGINE_VERSION = '${TAILWIND_ENGINE_VERSION}'`)) throw new Error('loader integrity stamp markers not found');
     fs.writeFileSync(loaderPath, stamped);
     await minifyScript('manifest.js');
 
