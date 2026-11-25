@@ -67,6 +67,7 @@
         "test:e2e:responsive-order": "node tests/e2e/utilities-responsive-order.e2e.mjs",
         "test:e2e:delta-arming": "node tests/e2e/utilities-delta-arming.e2e.mjs",
         "test:e2e:boot-waterfall": "node tests/e2e/boot-waterfall.e2e.mjs",
+        "test:e2e:on-use": "node tests/e2e/on-use-modules.e2e.mjs",
         "test:e2e:virtual-boot": "node tests/e2e/virtual-boot.e2e.mjs",
         "test:e2e:tailwind-dark": "node tests/e2e/tailwind-dark-variant.e2e.mjs",
         "test:e2e:inline-style-variants": "node tests/e2e/utilities-inline-style-variants.e2e.mjs",
