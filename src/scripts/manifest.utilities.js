@@ -5102,7 +5102,17 @@ function armTailwindCache() {
 function startTailwindCache(state) {
     if (state.parsedMismatch && !state.skipped) skipTailwindCachePath(state);
     if (state.record && state.style && state.style.isConnected) watchCachedTailwind(state);
-    else recordTailwindEngine(state, null);
+    else afterTailwindHead(() => recordTailwindEngine(state, null));
+}
+
+// Head blocks the parser inserts are the baseline, not changes: record only once <head> is parsed
+function afterTailwindHead(fn) {
+    if (document.body) return fn();
+    let done = false;
+    const go = () => { if (!done) { done = true; o.disconnect(); fn(); } };
+    const o = new MutationObserver(() => { if (document.body) go(); });
+    o.observe(document.documentElement, { childList: true });
+    document.addEventListener('DOMContentLoaded', go, { once: true });
 }
 
 
