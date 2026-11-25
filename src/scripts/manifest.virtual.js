@@ -501,21 +501,20 @@ function initializeVirtualPlugin() {
             rowRo.observe(node);
         }
         // display:contents rows have no box: their cells are observed instead, and cells added later
-        // (x-if in the row) are found by one subtree observer on the host, created with the first such row
+        // (x-if in the row) are found by one MutationObserver watching each such row's own children
         let cellMo = null;
-        function watchCells() {
-            if (cellMo) return;
-            cellMo = new MutationObserver((records) => {
+        function watchChildren(entry, node) {
+            if (entry.watched) return;
+            entry.watched = true;
+            if (!cellMo) cellMo = new MutationObserver((records) => {
                 for (const r of records) {
-                    let n = r.target;
-                    if (n === host) continue;
-                    while (n && n.parentNode !== host) n = n.parentNode;
-                    const key = n && targetKey.get(n);
-                    if (key !== undefined && rendered.get(key)?.node === n) pending.add(key);
+                    if (!hasElement(r.addedNodes) && !hasElement(r.removedNodes)) continue;   // text-only changes
+                    const key = targetKey.get(r.target);
+                    if (key !== undefined && rendered.get(key)?.node === r.target) pending.add(key);
                 }
                 if (pending.size) schedule();
             });
-            cellMo.observe(host, { childList: true, subtree: true });
+            cellMo.observe(node, { childList: true });
         }
         function observeCells(entry, key, node) {
             for (const c of node.children) {
@@ -563,7 +562,7 @@ function initializeVirtualPlugin() {
             const node = entry.node;
             if (!node.isConnected) return false;
             const contents = getComputedStyle(node).display === 'contents';
-            if (contents && rowRo) { watchCells(); observeCells(entry, key, node); }
+            if (contents && rowRo) { watchChildren(entry, node); observeCells(entry, key, node); }
             entry.seen = true;
             const h = contents ? unionHeight(node) : node.offsetHeight;
             if (!h) return false;
@@ -711,6 +710,11 @@ function makeSpacer(kind, colCount) {
     s.style.background = 'none';
     s.style.pointerEvents = 'none';
     return s;
+}
+
+function hasElement(nodes) {
+    for (const n of nodes) if (n.nodeType === 1) return true;
+    return false;
 }
 
 // Box-less children (template, display:none) report a 0,0 rect that would drag
