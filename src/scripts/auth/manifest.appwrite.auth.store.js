@@ -63,6 +63,14 @@ function initializeAuthStore() {
         try { const saved = JSON.parse(raw || 'null'); return saved?.isAuthenticated ? (saved.user?.$id || null) : null; } catch { return null; }
     }
 
+    // Last signed-in identity this browser mirrored: a hint only, never trusted as identity
+    function persistedIdentity() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+            return saved?.isAuthenticated === true && saved.user?.$id ? { userId: saved.user.$id, isAnonymous: saved.isAnonymous === true } : null;
+        } catch { return null; }
+    }
+
     // Identity this tab is showing data for: while unverified, the last one mirrored
     function shownUserId(store, mirrored) {
         if (store.user?.$id) return store.user.$id;
@@ -486,8 +494,15 @@ function initializeAuthStore() {
 
         // Adopt the session Appwrite reports (throws when there is none or it is unreachable)
         async _restoreSession(appwrite, isCurrent = () => true) {
-            const user = await appwrite.account.get();
-            const sessionsResponse = await appwrite.account.listSessions();
+            // Both in flight when a session is likely; account.get's error still wins
+            const userRequest = appwrite.account.get();
+            let sessionsRequest = null;
+            if (persistedIdentity()) {
+                sessionsRequest = appwrite.account.listSessions();
+                sessionsRequest.catch(() => { });
+            }
+            const user = await userRequest;
+            const sessionsResponse = await (sessionsRequest || appwrite.account.listSessions());
             if (!isCurrent()) return false;
             this.user = user;
             const allSessions = sessionsResponse.sessions || [];
