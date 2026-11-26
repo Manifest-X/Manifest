@@ -225,3 +225,21 @@ describe('$auth.startTeamId lifetime', () => {
         expect(p.store._startTeamUserId).toBe('uA')
     })
 })
+
+describe('remembered teams per project', () => {
+    it('keeps the 10 most recent users and drops the oldest', async () => {
+        const local = {}
+        const users = Array.from({ length: 11 }, (_, i) => `old${i}`)
+        for (const id of users.slice(0, 10)) local[keyFor(id)] = 't1'
+        local[`manifest:auth:team-users:${project.endpoint}|${project.projectId}`] = JSON.stringify(users.slice(0, 10))
+        const p = start({ local })
+        await loaded(p)
+        await until(() => p.stored('uA') === 't1')
+        const index = JSON.parse(p.window.localStorage.getItem(`manifest:auth:team-users:${project.endpoint}|${project.projectId}`))
+        expect(index).toEqual(['uA', ...users.slice(0, 9)])
+        expect(p.window.localStorage.getItem(keyFor('old9'))).toBe(null)
+        expect(p.window.localStorage.getItem(keyFor('old0'))).toBe('t1')
+        // another project's entries are untouched
+        expect(index).toHaveLength(10)
+    })
+})

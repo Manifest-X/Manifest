@@ -617,6 +617,17 @@ function initializeAuthStore() {
 
     // Last current team per user (auth.teams.remember): keyed by project and user, so a shared device never crosses users
     const teamMemoryKey = (cfg, userId) => `manifest:auth:team:${cfg.endpoint}|${cfg.projectId}|${userId}`;
+    // Most recent users first; only the last TEAM_MEMORY_USERS keep an entry per project
+    const TEAM_MEMORY_USERS = 10;
+    const teamMemoryIndexKey = cfg => `manifest:auth:team-users:${cfg.endpoint}|${cfg.projectId}`;
+    function rememberTeamFor(cfg, userId, teamId) {
+        localStorage.setItem(teamMemoryKey(cfg, userId), teamId);
+        let users = [];
+        try { users = JSON.parse(localStorage.getItem(teamMemoryIndexKey(cfg)) || '[]'); } catch (e) { users = []; }
+        users = [userId, ...(Array.isArray(users) ? users : []).filter(id => id !== userId)];
+        for (const dropped of users.slice(TEAM_MEMORY_USERS)) localStorage.removeItem(teamMemoryKey(cfg, dropped));
+        localStorage.setItem(teamMemoryIndexKey(cfg), JSON.stringify(users.slice(0, TEAM_MEMORY_USERS)));
+    }
 
     // Identity this tab is showing data for: while unverified, the last one mirrored
     function shownUserId(store, mirrored) {
@@ -1204,7 +1215,7 @@ function initializeAuthStore() {
             if (!teamId || !userId || this.isAnonymous) return;
             const cfg = await config.getAppwriteConfig();
             if (!cfg?.rememberTeam || this.currentTeam?.$id !== teamId || this.user?.$id !== userId || this.isAnonymous) return;
-            try { localStorage.setItem(teamMemoryKey(cfg, userId), teamId); } catch (e) { }
+            try { rememberTeamFor(cfg, userId, teamId); } catch (e) { }
         },
 
         // The current user's membership in the current team, from the listed page or fetched on its own; null means none (no permissions)
