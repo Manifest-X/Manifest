@@ -109,3 +109,33 @@ describe('auth.teams.memberLimit', () => {
         expect(p.store.currentTeamMembershipsTotal).toBe(0)
     })
 })
+
+describe('optimistic member removal', () => {
+    it('lowers the total with the list, so the cursor never points past the end', async () => {
+        const members = Array.from({ length: 5 }, (_, i) => ({ $id: `m${i}`, teamId: 't1', userId: i ? `u${i}` : 'uA', roles: ['owner'], confirm: true }))
+        let remaining = members.length
+        const p = boot({
+            cfg: { teams: true, memberLimit: 4 }, persisted,
+            responder: (name, arg, entry) => {
+                if (name === 'account.get') return user
+                if (name === 'account.listSessions') return { sessions: [{ $id: 's1', current: true, provider: 'email' }] }
+                if (name === 'teams.list') return { teams: [{ $id: 't1', name: 'One' }], total: 1 }
+                if (name === 'teams.getPrefs') return {}
+                if (name === 'teams.deleteMembership') return undefined // held: the optimistic state is what is checked
+                if (name === 'teams.listMemberships') return { memberships: members.slice(0, 4), total: remaining }
+            },
+        })
+        p.fake.appwrite.teams.deleteMembership = () => new Promise(() => {})
+        await until(() => p.events.some(e => e.type === 'teams-loaded'))
+        expect(p.store.currentTeamMembershipsTotal).toBe(5)
+        expect(p.store.currentTeamMembershipsCursor).toBe('m3')
+        p.store.deleteMembership('t1', 'm3')
+        await sleep(10)
+        expect(p.store.currentTeamMemberships.map(m => m.$id)).toEqual(['m0', 'm1', 'm2'])
+        expect(p.store.currentTeamMembershipsTotal).toBe(4)
+        expect(p.store.currentTeamMembershipsCursor).toBe('m2')
+        p.store.deleteMembership('t1', 'missing')
+        await sleep(10)
+        expect(p.store.currentTeamMembershipsTotal).toBe(4)
+    })
+})
