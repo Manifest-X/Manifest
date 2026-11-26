@@ -646,6 +646,72 @@ async function main() {
             await an.close()
         }
 
+        // Round 3: last item from random positions with recycle (layout clamps are not outside scrolls)
+        for (const layout of ['block', 'contents']) {
+            const p = await open(`/${layout}?h=v&recycle=1`)
+            const r = await run(p, async () => {
+                const bad = []
+                for (let i = 0; i < 30; i++) {
+                    const align = ['end', 'start', 'center', 'nearest'][i % 4]
+                    T.set(Math.floor(Math.random() * 300000)); await frames_(3)
+                    const n = T.data().items.length - 1 - (i % 3)
+                    const e = await T.api().scrollToIndex(n, { align }); const a = T.at(n)
+                    const ok = e && e.dataset.n === 'n' + n && a && (align === 'nearest' ? a.top >= -1 && a.bottom <= a.vh + 1 : Math.abs(a.bottom - a.vh) <= 1 || Math.abs(a.st - a.max) <= 1 || Math.abs(a.top) <= 1 || Math.abs((a.top + a.bottom) / 2 - a.vh / 2) <= 1)
+                    if (!ok) bad.push({ i, n, align, el: e && e.dataset.n, a })
+                }
+                const e3 = await T.api().scrollToIndex(3)
+                const e = await T.api().scrollToIndex(2997, { align: 'center' }); const a = T.at(2997)
+                return { bad, det: { e3: e3 && e3.dataset.n, el: e && e.dataset.n, a } }
+            })
+            check(!r.error && r.bad.length === 0, `${layout} + recycle: the last items from 30 random positions resolve with the row in place`, r.bad && r.bad.slice(0, 3))
+            check(!r.error && r.det.el === 'n2997' && aligned(r.det.a, 'center'), `${layout} + recycle: scrollToIndex(3) then (2997, center) lands`, r.det)
+            await done(p, `last item ${layout} recycle`)
+        }
+
+        // Round 3: a throw mid snap pass leaves snapping on; x-axis snap on a vertical list takes the normal path
+        {
+            const p = await open('/snap?h=v')
+            const r = await run(p, async () => {
+                const v = T.v(), orig = v.getBoundingClientRect, before = v.style.scrollSnapType
+                let armed = false, thrown = false
+                v.getBoundingClientRect = function () { if (armed && v.style.scrollSnapType === 'none' && !thrown) { thrown = true; throw new Error('probe throw') } return orig.call(this) }
+                armed = true
+                const el = await Promise.race([T.api().scrollToIndex(1500), new Promise((r) => setTimeout(() => r('PENDING'), 2000))])
+                v.getBoundingClientRect = orig
+                return { thrown, el: el === 'PENDING' ? el : el && el.dataset.n, before, inline: v.style.scrollSnapType, computed: getComputedStyle(v).scrollSnapType }
+            })
+            check(!r.error && r.thrown && r.el !== 'PENDING' && r.inline === r.before && r.computed.includes('mandatory'), 'snap: a throw during the snap pass still restores scroll-snap-type and settles', r)
+            p.errors = p.errors.filter((e) => !e.includes('probe throw'))
+            await done(p, 'snap throw')
+            const x = await open('/block?h=v&style=' + encodeURIComponent('scroll-snap-type:x mandatory'))
+            const rx = await run(x, async () => {
+                T.set(0); await T.stable()
+                const seen = []; let on = true
+                const tick = () => { if (!on) return; seen.push(Math.round(T.v().scrollTop)); requestAnimationFrame(tick) }
+                requestAnimationFrame(tick)
+                const el = await T.api().scrollToIndex(1900, { behavior: 'smooth' })
+                on = false
+                const steps = new Set(seen).size
+                return { el: el && el.dataset.n, steps, at: T.at(1900) }
+            })
+            check(!rx.error && rx.el === 'n1900' && rx.steps > 8 && aligned(rx.at), 'scroll-snap-type: x on a vertical list: the normal smooth path (many steps), lands', rx)
+            await done(x, 'x snap')
+        }
+
+        // Round 3: the cap for sizes that never settle is time-based (~1.5 s)
+        {
+            const p = await open('/auto?style=overflow-anchor:none&row=' + encodeURIComponent(`x-init="const f = () => { if (!$el.isConnected) return; $el.querySelector('.pad').style.height = (row.h + (Math.random() * 30 | 0)) + 'px'; requestAnimationFrame(f) }; requestAnimationFrame(f)"`), false)
+            const r = await run(p, async () => {
+                let frames = 0, on = true; const f = () => { if (on) { frames++; requestAnimationFrame(f) } }; requestAnimationFrame(f)
+                const t0 = performance.now()
+                const el = await T.api().scrollToIndex(1500, { align: 'center' })
+                on = false
+                return { el: el && el.dataset.n, ms: Math.round(performance.now() - t0), frames }
+            })
+            check(!r.error && r.el === 'n1500' && r.ms >= 1400 && r.ms <= 1800, 'sizes that never settle: resolves after about 1.5 s of trying', r)
+            await p.close()
+        }
+
         // No cost when unused: no listener or observer beyond what the list already had
         {
             const pb = BASELINE ? await open('/block?h=v&base=1') : null
