@@ -280,6 +280,8 @@ function initializeDropdownPlugin() {
             if (runAbort) runAbort.abort();
             if (menu) {
                 if (changed) {
+                    // A menu this trigger opened closes before the trigger points elsewhere
+                    if (menu.__mnfstTrigger === el || menu._triggerHost === el || el.getAttribute('aria-expanded') === 'true') hideIfOpen(menu);
                     releaseContextTrigger(menu, el);
                     if (menu.__mnfstTrigger === el) menu.__mnfstTrigger = null;
                 }

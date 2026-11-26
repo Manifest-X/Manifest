@@ -118,7 +118,7 @@ const plainItem = `(_, k) => ({ id: k, slot: k, name: 'n' + k, ex: k % 2 === 0 }
 const extraList = (recycle, rowInner, { rowAttrs = '', scripts = '', after = '', key = 'row.id' } = {}) => `<!doctype html><html><head><meta charset="utf-8">
 <style>body{margin:0;font:14px/20px sans-serif} .r{box-sizing:border-box;height:30px;overflow:hidden;display:flex;gap:4px}</style>
 ${HELPERS}${scripts}<script src="/scripts/manifest.virtual.js"></script><script defer src="/__alpine.js"></script></head><body>
-<div id="app" x-data="{ tick: 0, items: Array.from({ length: 2000 }, ${plainItem}) }">
+<div id="app" x-data="{ tick: 0, done: 0, items: Array.from({ length: 2000 }, ${plainItem}) }">
   <div id="v" x-virtual="${opts(recycle)}" style="height:300px;width:400px;overflow:auto">
     <template x-for="(row, i) in items" :key="${key}"><div class="r" :data-n="row.name" :data-i="i" ${rowAttrs}><span class="name" x-text="row.name"></span>${rowInner}</div></template>
   </div>${after}
@@ -132,6 +132,15 @@ const EXTRA_PAGES = {
     hook: (r) => extraList(r, '<b class="st" x-text="open ? \'open\' : \'closed\'"></b>',
         { rowAttrs: 'x-data="{ open: false, got: null, seen: null }" x-init="$el.dataset.born = row.name" @manifest:virtual-recycle="open = false; got = $event.detail.key + \':\' + $event.detail.index; seen = row.name" :data-got="got" :data-seen="seen"' }),
     transition: (r) => extraList(r, '<em x-show="row.ex" x-transition>ex</em>'),
+    // Handlers that change the source or scroll, or read the row's DOM (must see the new item's)
+    hooksplice: (r) => extraList(r, '', { rowAttrs: '@manifest:virtual-recycle="if (!done++) items.splice(0, 1)"' }),
+    hookscroll: (r) => extraList(r, '', { rowAttrs: '@manifest:virtual-recycle="if (!done++) document.getElementById(\'v\').scrollTop += 300"' }),
+    hookboth: (r) => extraList(r, '', { rowAttrs: '@manifest:virtual-recycle="if (!done++) { items.splice(0, 1); document.getElementById(\'v\').scrollTop += 300 }"' }),
+    hooksaw: (r) => extraList(r, '', { rowAttrs: '@manifest:virtual-recycle="$el.dataset.saw = $el.querySelector(\'.name\').textContent + \'|\' + $el.dataset.n"' }),
+    // An author's own aria-expanded (no aria-controls/popovertarget) is row data, not an open trigger
+    expanded: (r) => extraList(r, '<span class="ex" :aria-expanded="row.ex ? \'true\' : \'false\'" x-text="row.ex ? \'expanded\' : \'collapsed\'"></span>'),
+    initnested: (r) => extraList(r, '<em x-init="$el.dataset.born = row.name" @manifest:virtual-recycle="$el.dataset.born = row.name">i</em>'),
+    initmod: (r) => extraList(r, '', { rowAttrs: 'x-init.once="$el.dataset.born = row.name"' }),
     init: (r) => extraList(r, '<em x-init="$el.dataset.born = row.name">i</em>'),
     // An engine that keeps a failed effect live (as older reactivity did), and one row init that throws
     throwing: (r) => extraList(r, '', { scripts: `<script>document.addEventListener('alpine:init', () => {
@@ -524,6 +533,67 @@ async function main() {
             } else check(res.reused === 0 && res.freshFired === 0, 'recycle hook, recycle off: never fired', res)
             check(p.warns.length === 0, `recycle hook, recycle ${r ? 'on' : 'off'}: no x-init warning when the template handles the event`, p.warns)
             await done(p, `recycle hook, recycle ${r ? 'on' : 'off'}`)
+        }
+
+        // The hook fires after the pass's row updates: handlers that splice or scroll leave no stale bindings,
+        // and see the new item's DOM
+        {
+            const rowsTrue = () => {
+                const items = T.data().items, bad = []
+                let prev = null
+                for (const row of T.rows()) {
+                    const i = +row.dataset.i, it = items[i]
+                    if (!it || it.name !== row.dataset.n || row.querySelector('.name').textContent !== row.dataset.n) bad.push([row.dataset.n, i, it && it.name])
+                    if (prev !== null && i !== prev + 1) bad.push(['order', prev, i])
+                    prev = i
+                }
+                return bad
+            }
+            for (const page of ['hooksplice', 'hookscroll', 'hookboth']) {
+                const p = await openExtra(page, 1)
+                const res = await p.evaluate(async (fn) => {
+                    const rowsTrue = (0, eval)('(' + fn + ')')
+                    await T.go(60000)
+                    await frames_(4); await T.stable()
+                    const settled = rowsTrue()
+                    T.data().items.push({ id: 'p', slot: 'p', name: 'p', ex: false })
+                    await frames_(4); await T.stable()
+                    return { fired: T.data().done, settled: settled.slice(0, 4), bad: settled.length, afterPush: rowsTrue().length }
+                }, rowsTrue.toString())
+                check(res.fired > 0 && res.bad === 0 && res.afterPush === 0, `recycle hook timing: a handler that ${page === 'hooksplice' ? 'splices the source' : page === 'hookscroll' ? 'scrolls' : 'splices and scrolls'} leaves every row on its own item`, res)
+                await done(p, `hook timing ${page}`)
+            }
+            const p = await openExtra('hooksaw', 1)
+            const saw = await p.evaluate(async () => {
+                await T.go(20000)
+                await frames_(2)
+                const rows = T.rows().filter((row) => row.dataset.saw !== undefined)
+                return { fired: rows.length, stale: rows.filter((row) => row.dataset.saw !== row.dataset.n + '|' + row.dataset.n).map((row) => [row.dataset.n, row.dataset.saw]).slice(0, 3) }
+            })
+            check(saw.fired > 5 && saw.stale.length === 0, 'recycle hook timing: the handler reads the new item\'s DOM (text and bound attributes)', saw)
+            await done(p, 'hook timing DOM')
+        }
+
+        // A data-bound aria-expanded (no aria-controls/popovertarget) does not stop reuse
+        {
+            const p = await openExtra('expanded', 1)
+            const res = await p.evaluate(async () => {
+                await T.go(3000)
+                const row = T.rows().find((r) => r.querySelector('.ex').getAttribute('aria-expanded') === 'true')
+                const was = row.dataset.n
+                await T.go(30000)
+                const it = T.data().items[+row.dataset.i]
+                return { was, reused: row.isConnected, now: row.dataset.n, aria: row.querySelector('.ex').getAttribute('aria-expanded'), text: row.querySelector('.ex').textContent, want: it.ex }
+            })
+            check(res.reused && res.now !== res.was && res.aria === String(res.want) && res.text === (res.want ? 'expanded' : 'collapsed'), 'aria-expanded bound to row data (no aria-controls): the row is reused and shows the new item\'s value', res)
+            await done(p, 'data-bound aria-expanded')
+        }
+
+        // x-init warning: a handler on a nested element (the event does not bubble) does not silence it; x-init.once counts
+        for (const page of ['initnested', 'initmod']) {
+            const p = await openExtra(page, 1)
+            check(p.warns.length === 1 && /x-init/.test(p.warns[0]), `x-init warning: ${page === 'initnested' ? 'a recycle handler on a nested element does not silence it' : 'x-init.once counts as x-init'}`, p.warns)
+            await done(p, `x-init warning ${page}`)
         }
 
         // x-transition in rows: recycle stays off for the list, with one warning; x-init without the hook warns once
