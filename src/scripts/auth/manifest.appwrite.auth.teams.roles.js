@@ -335,7 +335,7 @@ function initializeTeamsRoles() {
                 return roleHasAllOwnerPermissions(roleName, memberRoles);
             };
 
-            // Boot prefetch of a team's prefs ({ value } | { error }); a hung one gives way to a fresh read
+            // Boot prefetch of a team's prefs ({ value } | { error }); only a success is used, a failed or hung one gives way to the normal read
             store._seedTeamPrefs = function (teamId, request) {
                 const hit = rolesCache.get(teamId);
                 if ((hit && Date.now() - hit.at < ROLES_CACHE_TTL_MS) || !this._appwrite?.teams) return;
@@ -344,8 +344,12 @@ function initializeTeamsRoles() {
                 const wait = new Promise(r => { timer = setTimeout(() => r({ timedOut: true }), this._prefetchWaitMs ?? 3000); });
                 const promise = Promise.race([request, wait]).then(answer => {
                     clearTimeout(timer);
-                    if (!answer.timedOut) return answer.error ? { error: answer.error } : { prefs: answer.value };
-                    return Promise.resolve(appwrite.teams.getPrefs({ teamId })).then(prefs => ({ prefs }), error => ({ error }));
+                    if (!answer.timedOut && !answer.error) return { prefs: answer.value };
+                    try {
+                        return Promise.resolve(appwrite.teams.getPrefs({ teamId })).then(prefs => ({ prefs }), error => ({ error }));
+                    } catch (error) {
+                        return { error };
+                    }
                 });
                 rolesCache.set(teamId, { at: Date.now(), promise });
             };
