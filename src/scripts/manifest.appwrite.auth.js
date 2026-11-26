@@ -375,6 +375,7 @@ async function getAppwriteConfig() {
     const toBool = v => typeof v === 'string' ? /^(true|1|yes|on)$/i.test(v.trim()) : !!v;
 
     const guestTeams = toBool(appwriteConfig.auth?.teams?.guests); // seed default teams for guests
+    const rememberTeam = toBool(appwriteConfig.auth?.teams?.remember); // start each signed-in user on their last current team
     // Seed default teams for authenticated (non-anonymous) sessions. Defaults to true
     // (historical behavior). Set teams.authenticated:false with teams.guests:true to make
     // seeding guest-only — e.g. a per-guest sandbox that must never be minted for a
@@ -434,6 +435,7 @@ async function getAppwriteConfig() {
         templateTeams: templateTeams,
         teamsPollInterval: teamsPollInterval,
         memberLimit: memberLimit,
+        rememberTeam: rememberTeam,
         guestTeams: guestTeams,
         authenticatedTeams: authenticatedTeams, // seed defaults for authenticated sessions (default true)
         guestUpgrade: guestUpgrade,
@@ -602,6 +604,9 @@ function initializeAuthStore() {
         } catch { return null; }
     }
 
+    // Last current team per user (auth.teams.remember): keyed by project and user, so a shared device never crosses users
+    const teamMemoryKey = (cfg, userId) => `manifest:auth:team:${cfg.endpoint}|${cfg.projectId}|${userId}`;
+
     // Identity this tab is showing data for: while unverified, the last one mirrored
     function shownUserId(store, mirrored) {
         if (store.user?.$id) return store.user.$id;
@@ -701,6 +706,7 @@ function initializeAuthStore() {
         _otpMigrationTicket: null, // OTP: { ticket, userId } guest-migration ticket, kept across failed verify attempts
         teams: [], // List of user's teams
         currentTeam: null, // Currently selected/active team
+        startTeamId: null, // App-chosen team to start on when the teams first load (used if the user has it)
         _teamsPollInterval: null, // Interval ID for teams polling (deprecated, use realtime instead)
         _teamsRealtimeUnsubscribe: null, // Realtime subscription cleanup function (may be array of unsubscribes)
         _teamsRealtimeSubscribing: false, // Flag to prevent recursive subscription during refresh
@@ -948,6 +954,7 @@ function initializeAuthStore() {
             // Hoisted so the post-init background team load (below) can read it.
             let appwriteConfig = null;
             let earlyTeams = null;
+            let earlyMembers = null;
 
             try {
                 const appwrite = await config.getAppwriteClient();
@@ -970,6 +977,7 @@ function initializeAuthStore() {
                 try {
                     const restoring = this._restoreSession(appwrite);
                     earlyTeams = this._prefetchTeams(appwrite, appwriteConfig);
+                    earlyMembers = earlyTeams && this._prefetchStartTeam(appwrite, appwriteConfig);
                     await restoring;
 
                     // Team loading is deferred (not awaited) — runs in the background after
@@ -1027,7 +1035,8 @@ function initializeAuthStore() {
                 const owner = this.user?.$id;
                 const prefetched = earlyTeams && earlyTeams.userId === owner && earlyTeams.authEpoch === this._authEpoch
                     && earlyTeams.teamsEpoch === this._teamsEpoch ? earlyTeams : null;
-                this._loadTeamsAndSeed(appwriteConfig, { prefetched })
+                const prefetchedMembers = prefetched && earlyMembers ? earlyMembers : null;
+                this._loadTeamsAndSeed(appwriteConfig, { prefetched, prefetchedMembers })
                     .then(() => {
                         if (!this.isAuthenticated || this.user?.$id !== owner) return;
                         window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded', {
@@ -1107,6 +1116,51 @@ function initializeAuthStore() {
                 return null;
             }
             return { userId: hint.userId, authEpoch: this._authEpoch, teamsEpoch: this._teamsEpoch, request, used: false };
+        },
+
+        // Starting team's members and prefs, alongside the identity check; listMemberships uses them only for that team, user and epoch
+        _prefetchStartTeam(appwrite, cfg) {
+            const hint = persistedIdentity();
+            if (!hint || typeof appwrite?.teams?.listMemberships !== 'function' || typeof appwrite.teams.getPrefs !== 'function') return null;
+            const teamId = this.startTeamId || (hint.isAnonymous ? null : this._rememberedTeamId(cfg, hint.userId));
+            if (!teamId) return null;
+            const queries = this._memberQueries(cfg);
+            const settle = call => { try { return Promise.resolve(call()).then(value => ({ value }), error => ({ error })); } catch (error) { return Promise.resolve({ error }); } };
+            return {
+                teamId, userId: hint.userId, authEpoch: this._authEpoch, teamsEpoch: this._teamsEpoch, queries, used: false,
+                members: settle(() => appwrite.teams.listMemberships({ teamId, queries })),
+                prefs: settle(() => appwrite.teams.getPrefs({ teamId })),
+            };
+        },
+
+        // Queries for a member listing that brings none of its own (auth.teams.memberLimit)
+        _memberQueries(cfg) {
+            return cfg?.memberLimit && window.Appwrite?.Query?.limit ? [window.Appwrite.Query.limit(cfg.memberLimit)] : [];
+        },
+
+        _rememberedTeamId(cfg, userId) {
+            if (!cfg?.rememberTeam || !userId) return null;
+            try { return localStorage.getItem(teamMemoryKey(cfg, userId)) || null; } catch { return null; }
+        },
+
+        // Team to start on: the app's startTeamId, else the remembered one, if this user still has it
+        _startTeam(cfg, teams) {
+            const remembered = this.isAnonymous ? null : this._rememberedTeamId(cfg, this.user?.$id);
+            for (const id of [this.startTeamId, remembered]) {
+                const team = id && (teams || []).find(t => t.$id === id);
+                if (team) return team;
+            }
+            return null;
+        },
+
+        // Record the current team as this signed-in user's starting team (auth.teams.remember)
+        async _rememberTeam(team) {
+            const teamId = team?.$id;
+            const userId = this.user?.$id;
+            if (!teamId || !userId || this.isAnonymous) return;
+            const cfg = await config.getAppwriteConfig();
+            if (!cfg?.rememberTeam || this.currentTeam?.$id !== teamId || this.user?.$id !== userId || this.isAnonymous) return;
+            try { localStorage.setItem(teamMemoryKey(cfg, userId), teamId); } catch (e) { }
         },
 
         // Offline-booted tab: re-run the session check once Appwrite is reachable
@@ -1214,7 +1268,7 @@ function initializeAuthStore() {
 
         // Load the user's teams and seed configured defaults. Shared by the guest,
         // magic-link, OAuth, and init/restore paths.
-        async _loadTeamsAndSeed(appwriteConfig, { seed = true, prefetched = null } = {}) {
+        async _loadTeamsAndSeed(appwriteConfig, { seed = true, prefetched = null, prefetchedMembers = null } = {}) {
             const cfg = appwriteConfig || await config.getAppwriteConfig();
             if (!cfg?.teams) {
                 return;
@@ -1234,7 +1288,7 @@ function initializeAuthStore() {
             // Always load the user's real teams. Capture the result — never seed defaults
             // off an unconfirmed team list: a failed/incomplete load must not read as
             // "teamless" and mint a duplicate tenant (the settle-window mis-provision).
-            const loadResult = prefetched ? await this.listTeams([], '', { prefetched }) : await this.listTeams();
+            const loadResult = prefetched ? await this.listTeams([], '', { prefetched, prefetchedMembers }) : await this.listTeams();
             if (!needsSeed) {
                 return;
             }
@@ -1914,7 +1968,7 @@ function initializeTeamsCore() {
             };
 
             // List user's teams
-            store.listTeams = async function (queries = [], search = '', { prefetched = null } = {}) {
+            store.listTeams = async function (queries = [], search = '', { prefetched = null, prefetchedMembers = null } = {}) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
                 }
@@ -2020,13 +2074,17 @@ function initializeTeamsCore() {
 
                         if (stale()) return discarded;
                         // A team the app viewed during these awaits wins over the default pick
-                        if (hasDefaultTeams && window.ManifestAppwriteAuthTeamsDefaults && this.getDefaultTeams) {
+                        const startTeam = this._startTeam ? this._startTeam(appwriteConfig, this.teams) : null;
+                        if (startTeam) {
+                            if (!this.currentTeam) this.currentTeam = startTeam;
+                        } else if (hasDefaultTeams && window.ManifestAppwriteAuthTeamsDefaults && this.getDefaultTeams) {
                             const defaultTeams = await this.getDefaultTeams();
                             if (stale()) return discarded;
                             if (!this.currentTeam) this.currentTeam = defaultTeams.length > 0 ? defaultTeams[0] : this.teams[0];
                         } else if (!this.currentTeam) {
                             this.currentTeam = this.teams[0];
                         }
+                        if (this._rememberTeam) this._rememberTeam(this.currentTeam);
                     }
 
                     // Auto-load memberships for current team (if members module is loaded)
@@ -2034,7 +2092,9 @@ function initializeTeamsCore() {
                         // Written only while that team is still current: a viewTeam meanwhile owns the list
                         const membersTeamId = this.currentTeam.$id;
                         try {
-                            const membershipsResult = await this.listMemberships(membersTeamId);
+                            const membershipsResult = prefetchedMembers
+                                ? await this.listMemberships(membersTeamId, [], '', { prefetched: prefetchedMembers })
+                                : await this.listMemberships(membersTeamId);
                             if (stale()) return discarded;
                             if (membershipsResult.success && this.currentTeam?.$id === membersTeamId) {
                                 this.currentTeamMemberships = membershipsResult.memberships || [];
@@ -2252,6 +2312,7 @@ function initializeTeamsCore() {
                             this.viewTeam(remainingTeam).catch(() => { });
                         } else if (remainingTeam) {
                             this.currentTeam = remainingTeam;
+                            if (this._rememberTeam) this._rememberTeam(remainingTeam);
                         }
                     }
                 }
@@ -2305,6 +2366,7 @@ function initializeTeamsCore() {
                             await this.viewTeam(restoredTeam);
                         } else if (restoredTeam) {
                             this.currentTeam = restoredTeam;
+                            if (this._rememberTeam) this._rememberTeam(restoredTeam);
                         }
                     }
 
@@ -3264,6 +3326,7 @@ async function ensureDefaultTeams(store) {
         const allDefaultTeams = [...existingTeams, ...createdTeams];
         if (allDefaultTeams.length > 0) {
             store.currentTeam = allDefaultTeams[0];
+            if (store._rememberTeam) store._rememberTeam(store.currentTeam);
         }
     }
 
@@ -3936,6 +3999,21 @@ function initializeTeamsRoles() {
                 const appwriteConfig = await config.getAppwriteConfig();
                 const memberRoles = appwriteConfig?.memberRoles || null;
                 return roleHasAllOwnerPermissions(roleName, memberRoles);
+            };
+
+            // Boot prefetch of a team's prefs ({ value } | { error }); a hung one gives way to a fresh read
+            store._seedTeamPrefs = function (teamId, request) {
+                const hit = rolesCache.get(teamId);
+                if ((hit && Date.now() - hit.at < ROLES_CACHE_TTL_MS) || !this._appwrite?.teams) return;
+                const appwrite = this._appwrite;
+                let timer;
+                const wait = new Promise(r => { timer = setTimeout(() => r({ timedOut: true }), this._prefetchWaitMs ?? 3000); });
+                const promise = Promise.race([request, wait]).then(answer => {
+                    clearTimeout(timer);
+                    if (!answer.timedOut) return answer.error ? { error: answer.error } : { prefs: answer.value };
+                    return Promise.resolve(appwrite.teams.getPrefs({ teamId })).then(prefs => ({ prefs }), error => ({ error }));
+                });
+                rolesCache.set(teamId, { at: Date.now(), promise });
             };
 
             store.getUserGeneratedRoles = async function (teamId) {
@@ -4779,7 +4857,7 @@ function initializeTeamsMembers() {
             };
 
             // List team memberships
-            store.listMemberships = async function (teamId, queries = [], search = '') {
+            store.listMemberships = async function (teamId, queries = [], search = '', { prefetched = null } = {}) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
                 }
@@ -4794,8 +4872,8 @@ function initializeTeamsMembers() {
                 try {
                     // A listing with no queries of its own uses auth.teams.memberLimit when set
                     if (!queries || queries.length === 0) {
-                        const memberLimit = (await config.getAppwriteConfig())?.memberLimit;
-                        if (memberLimit && window.Appwrite?.Query?.limit) queries = [window.Appwrite.Query.limit(memberLimit)];
+                        const memberQueries = this._memberQueries ? this._memberQueries(await config.getAppwriteConfig()) : [];
+                        if (memberQueries.length) queries = memberQueries;
                     }
                     const params = {
                         teamId: teamId,
@@ -4804,10 +4882,27 @@ function initializeTeamsMembers() {
                     if (search && search.trim().length > 0) {
                         params.search = search;
                     }
-                    const request = this._appwrite.teams.listMemberships(params);
+                    // Boot prefetch of the starting team: once, for this team, user, epoch and queries
+                    const userId = this.user?.$id;
+                    const early = prefetched && !prefetched.used && prefetched.teamId === teamId && !params.search && prefetched.userId === userId
+                        && prefetched.authEpoch === this._authEpoch && prefetched.teamsEpoch === this._teamsEpoch
+                        && JSON.stringify(prefetched.queries) === JSON.stringify(queries) ? prefetched : null;
+                    if (early) {
+                        early.used = true;
+                        if (this._seedTeamPrefs) this._seedTeamPrefs(teamId, early.prefs);
+                    }
+                    const request = early ? null : this._appwrite.teams.listMemberships(params);
                     // The current team's prefs are needed next (display roles, permissions): read them alongside
                     if (this.currentTeam?.$id === teamId && this.getUserGeneratedRoles) this.getUserGeneratedRoles(teamId).catch(() => { });
-                    const result = await request;
+                    let result = null;
+                    if (early) {
+                        let timer;
+                        const answer = await Promise.race([early.members, new Promise(r => { timer = setTimeout(() => r({ timedOut: true }), this._prefetchWaitMs ?? 3000); })]);
+                        clearTimeout(timer);
+                        if (!answer.timedOut && !answer.error && answer.value && early.authEpoch === this._authEpoch
+                            && early.teamsEpoch === this._teamsEpoch && this.user?.$id === userId) result = answer.value;
+                    }
+                    if (!result) result = await (request || this._appwrite.teams.listMemberships(params));
                     let memberships = result.memberships || [];
 
                     // Enhance memberships with user email if missing
@@ -5560,6 +5655,7 @@ function initializeTeamsConvenience() {
                                     await this.viewTeam(remainingTeam);
                                 } else {
                                     this.currentTeam = remainingTeam;
+                                    if (this._rememberTeam) this._rememberTeam(remainingTeam);
                                 }
                             }
                         }
@@ -5571,6 +5667,7 @@ function initializeTeamsConvenience() {
                 // Convenience method: view team (sets current team and loads memberships)
                 store.viewTeam = async function (team) {
                     this.currentTeam = team;
+                    if (this._rememberTeam) this._rememberTeam(team);
                     // Reset rename input to current team name when viewing a team
                     if (team && team.name) {
                         this.updateTeamNameInput = team.name;

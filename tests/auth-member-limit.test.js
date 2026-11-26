@@ -40,8 +40,17 @@ async function configFor(teams) {
     vm.createContext(ctx)
     vm.runInContext(CONFIG_SRC, ctx)
     const cfg = await ctx.ManifestAppwriteAuthConfig.getAppwriteConfig()
-    return { memberLimit: cfg.memberLimit, warnings }
+    return { memberLimit: cfg.memberLimit, rememberTeam: cfg.rememberTeam, warnings }
 }
+
+describe('auth.teams.remember parsing', () => {
+    it('is a boolean, off when absent; interpolated strings read like other auth booleans', async () => {
+        expect((await configFor({})).rememberTeam).toBe(false)
+        expect((await configFor({ remember: true })).rememberTeam).toBe(true)
+        expect((await configFor({ remember: 'true' })).rememberTeam).toBe(true)
+        expect((await configFor({ remember: 'false' })).rememberTeam).toBe(false)
+    })
+})
 
 describe('auth.teams.memberLimit', () => {
     it('validates: integers 1-5000 (numeric strings from env interpolation too), else Appwrite\'s default with one warning', async () => {

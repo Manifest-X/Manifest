@@ -71,6 +71,9 @@ function initializeAuthStore() {
         } catch { return null; }
     }
 
+    // Last current team per user (auth.teams.remember): keyed by project and user, so a shared device never crosses users
+    const teamMemoryKey = (cfg, userId) => `manifest:auth:team:${cfg.endpoint}|${cfg.projectId}|${userId}`;
+
     // Identity this tab is showing data for: while unverified, the last one mirrored
     function shownUserId(store, mirrored) {
         if (store.user?.$id) return store.user.$id;
@@ -170,6 +173,7 @@ function initializeAuthStore() {
         _otpMigrationTicket: null, // OTP: { ticket, userId } guest-migration ticket, kept across failed verify attempts
         teams: [], // List of user's teams
         currentTeam: null, // Currently selected/active team
+        startTeamId: null, // App-chosen team to start on when the teams first load (used if the user has it)
         _teamsPollInterval: null, // Interval ID for teams polling (deprecated, use realtime instead)
         _teamsRealtimeUnsubscribe: null, // Realtime subscription cleanup function (may be array of unsubscribes)
         _teamsRealtimeSubscribing: false, // Flag to prevent recursive subscription during refresh
@@ -417,6 +421,7 @@ function initializeAuthStore() {
             // Hoisted so the post-init background team load (below) can read it.
             let appwriteConfig = null;
             let earlyTeams = null;
+            let earlyMembers = null;
 
             try {
                 const appwrite = await config.getAppwriteClient();
@@ -439,6 +444,7 @@ function initializeAuthStore() {
                 try {
                     const restoring = this._restoreSession(appwrite);
                     earlyTeams = this._prefetchTeams(appwrite, appwriteConfig);
+                    earlyMembers = earlyTeams && this._prefetchStartTeam(appwrite, appwriteConfig);
                     await restoring;
 
                     // Team loading is deferred (not awaited) — runs in the background after
@@ -496,7 +502,8 @@ function initializeAuthStore() {
                 const owner = this.user?.$id;
                 const prefetched = earlyTeams && earlyTeams.userId === owner && earlyTeams.authEpoch === this._authEpoch
                     && earlyTeams.teamsEpoch === this._teamsEpoch ? earlyTeams : null;
-                this._loadTeamsAndSeed(appwriteConfig, { prefetched })
+                const prefetchedMembers = prefetched && earlyMembers ? earlyMembers : null;
+                this._loadTeamsAndSeed(appwriteConfig, { prefetched, prefetchedMembers })
                     .then(() => {
                         if (!this.isAuthenticated || this.user?.$id !== owner) return;
                         window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded', {
@@ -576,6 +583,51 @@ function initializeAuthStore() {
                 return null;
             }
             return { userId: hint.userId, authEpoch: this._authEpoch, teamsEpoch: this._teamsEpoch, request, used: false };
+        },
+
+        // Starting team's members and prefs, alongside the identity check; listMemberships uses them only for that team, user and epoch
+        _prefetchStartTeam(appwrite, cfg) {
+            const hint = persistedIdentity();
+            if (!hint || typeof appwrite?.teams?.listMemberships !== 'function' || typeof appwrite.teams.getPrefs !== 'function') return null;
+            const teamId = this.startTeamId || (hint.isAnonymous ? null : this._rememberedTeamId(cfg, hint.userId));
+            if (!teamId) return null;
+            const queries = this._memberQueries(cfg);
+            const settle = call => { try { return Promise.resolve(call()).then(value => ({ value }), error => ({ error })); } catch (error) { return Promise.resolve({ error }); } };
+            return {
+                teamId, userId: hint.userId, authEpoch: this._authEpoch, teamsEpoch: this._teamsEpoch, queries, used: false,
+                members: settle(() => appwrite.teams.listMemberships({ teamId, queries })),
+                prefs: settle(() => appwrite.teams.getPrefs({ teamId })),
+            };
+        },
+
+        // Queries for a member listing that brings none of its own (auth.teams.memberLimit)
+        _memberQueries(cfg) {
+            return cfg?.memberLimit && window.Appwrite?.Query?.limit ? [window.Appwrite.Query.limit(cfg.memberLimit)] : [];
+        },
+
+        _rememberedTeamId(cfg, userId) {
+            if (!cfg?.rememberTeam || !userId) return null;
+            try { return localStorage.getItem(teamMemoryKey(cfg, userId)) || null; } catch { return null; }
+        },
+
+        // Team to start on: the app's startTeamId, else the remembered one, if this user still has it
+        _startTeam(cfg, teams) {
+            const remembered = this.isAnonymous ? null : this._rememberedTeamId(cfg, this.user?.$id);
+            for (const id of [this.startTeamId, remembered]) {
+                const team = id && (teams || []).find(t => t.$id === id);
+                if (team) return team;
+            }
+            return null;
+        },
+
+        // Record the current team as this signed-in user's starting team (auth.teams.remember)
+        async _rememberTeam(team) {
+            const teamId = team?.$id;
+            const userId = this.user?.$id;
+            if (!teamId || !userId || this.isAnonymous) return;
+            const cfg = await config.getAppwriteConfig();
+            if (!cfg?.rememberTeam || this.currentTeam?.$id !== teamId || this.user?.$id !== userId || this.isAnonymous) return;
+            try { localStorage.setItem(teamMemoryKey(cfg, userId), teamId); } catch (e) { }
         },
 
         // Offline-booted tab: re-run the session check once Appwrite is reachable
@@ -683,7 +735,7 @@ function initializeAuthStore() {
 
         // Load the user's teams and seed configured defaults. Shared by the guest,
         // magic-link, OAuth, and init/restore paths.
-        async _loadTeamsAndSeed(appwriteConfig, { seed = true, prefetched = null } = {}) {
+        async _loadTeamsAndSeed(appwriteConfig, { seed = true, prefetched = null, prefetchedMembers = null } = {}) {
             const cfg = appwriteConfig || await config.getAppwriteConfig();
             if (!cfg?.teams) {
                 return;
@@ -703,7 +755,7 @@ function initializeAuthStore() {
             // Always load the user's real teams. Capture the result — never seed defaults
             // off an unconfirmed team list: a failed/incomplete load must not read as
             // "teamless" and mint a duplicate tenant (the settle-window mis-provision).
-            const loadResult = prefetched ? await this.listTeams([], '', { prefetched }) : await this.listTeams();
+            const loadResult = prefetched ? await this.listTeams([], '', { prefetched, prefetchedMembers }) : await this.listTeams();
             if (!needsSeed) {
                 return;
             }

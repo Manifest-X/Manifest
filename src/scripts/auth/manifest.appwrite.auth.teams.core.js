@@ -102,7 +102,7 @@ function initializeTeamsCore() {
             };
 
             // List user's teams
-            store.listTeams = async function (queries = [], search = '', { prefetched = null } = {}) {
+            store.listTeams = async function (queries = [], search = '', { prefetched = null, prefetchedMembers = null } = {}) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
                 }
@@ -208,13 +208,17 @@ function initializeTeamsCore() {
 
                         if (stale()) return discarded;
                         // A team the app viewed during these awaits wins over the default pick
-                        if (hasDefaultTeams && window.ManifestAppwriteAuthTeamsDefaults && this.getDefaultTeams) {
+                        const startTeam = this._startTeam ? this._startTeam(appwriteConfig, this.teams) : null;
+                        if (startTeam) {
+                            if (!this.currentTeam) this.currentTeam = startTeam;
+                        } else if (hasDefaultTeams && window.ManifestAppwriteAuthTeamsDefaults && this.getDefaultTeams) {
                             const defaultTeams = await this.getDefaultTeams();
                             if (stale()) return discarded;
                             if (!this.currentTeam) this.currentTeam = defaultTeams.length > 0 ? defaultTeams[0] : this.teams[0];
                         } else if (!this.currentTeam) {
                             this.currentTeam = this.teams[0];
                         }
+                        if (this._rememberTeam) this._rememberTeam(this.currentTeam);
                     }
 
                     // Auto-load memberships for current team (if members module is loaded)
@@ -222,7 +226,9 @@ function initializeTeamsCore() {
                         // Written only while that team is still current: a viewTeam meanwhile owns the list
                         const membersTeamId = this.currentTeam.$id;
                         try {
-                            const membershipsResult = await this.listMemberships(membersTeamId);
+                            const membershipsResult = prefetchedMembers
+                                ? await this.listMemberships(membersTeamId, [], '', { prefetched: prefetchedMembers })
+                                : await this.listMemberships(membersTeamId);
                             if (stale()) return discarded;
                             if (membershipsResult.success && this.currentTeam?.$id === membersTeamId) {
                                 this.currentTeamMemberships = membershipsResult.memberships || [];
@@ -440,6 +446,7 @@ function initializeTeamsCore() {
                             this.viewTeam(remainingTeam).catch(() => { });
                         } else if (remainingTeam) {
                             this.currentTeam = remainingTeam;
+                            if (this._rememberTeam) this._rememberTeam(remainingTeam);
                         }
                     }
                 }
@@ -493,6 +500,7 @@ function initializeTeamsCore() {
                             await this.viewTeam(restoredTeam);
                         } else if (restoredTeam) {
                             this.currentTeam = restoredTeam;
+                            if (this._rememberTeam) this._rememberTeam(restoredTeam);
                         }
                     }
 

@@ -371,6 +371,7 @@ async function getAppwriteConfig() {
     const toBool = v => typeof v === 'string' ? /^(true|1|yes|on)$/i.test(v.trim()) : !!v;
 
     const guestTeams = toBool(appwriteConfig.auth?.teams?.guests); // seed default teams for guests
+    const rememberTeam = toBool(appwriteConfig.auth?.teams?.remember); // start each signed-in user on their last current team
     // Seed default teams for authenticated (non-anonymous) sessions. Defaults to true
     // (historical behavior). Set teams.authenticated:false with teams.guests:true to make
     // seeding guest-only — e.g. a per-guest sandbox that must never be minted for a
@@ -430,6 +431,7 @@ async function getAppwriteConfig() {
         templateTeams: templateTeams,
         teamsPollInterval: teamsPollInterval,
         memberLimit: memberLimit,
+        rememberTeam: rememberTeam,
         guestTeams: guestTeams,
         authenticatedTeams: authenticatedTeams, // seed defaults for authenticated sessions (default true)
         guestUpgrade: guestUpgrade,

@@ -87,7 +87,8 @@ function storage(initial = {}) {
 // alpineInitAfter: page still loading, Alpine loads after this script; DOMContentLoaded fires first and
 // alpine:init that many ms later (the early entry into auth main)
 // data: also load the Appwrite data module (its auth pre-flight shares the fake's account.get)
-export function boot({ cfg, responder, persisted = null, search = '', realtime = false, alpineInitAfter = null, data = false }) {
+export function boot({ cfg, responder, persisted = null, search = '', realtime = false, alpineInitAfter = null, data = false, local = {}, onAlpineInit = null }) {
+    // local: extra localStorage entries; onAlpineInit(store): runs in alpine:init right after the store registers
     const fake = fakeAppwrite(responder)
     if (realtime) fake.enableRealtime()
     const target = new EventTarget()
@@ -99,7 +100,7 @@ export function boot({ cfg, responder, persisted = null, search = '', realtime =
         console: { log() {}, info() {}, debug() {}, warn() {}, error() {} },
         setTimeout, clearTimeout, setInterval, clearInterval, Promise, URL, URLSearchParams, JSON, Date, Map, Set,
         CustomEvent, Event,
-        localStorage: storage(persisted ? { 'manifest:auth:state': JSON.stringify(persisted) } : {}),
+        localStorage: storage({ ...local, ...(persisted ? { 'manifest:auth:state': JSON.stringify(persisted) } : {}) }),
         sessionStorage: storage(),
         location: { href: `https://app.test/${search}`, search, pathname: '/', origin: 'https://app.test', hash: '' },
         history: { replaceState() {} },
@@ -142,6 +143,7 @@ export function boot({ cfg, responder, persisted = null, search = '', realtime =
     vm.createContext(ctx)
     vm.runInContext(BUNDLE, ctx)
     if (data) vm.runInContext(DATA_APPWRITE, ctx)
+    if (onAlpineInit) docTarget.addEventListener('alpine:init', () => onAlpineInit(stores.auth))
     if (alpineInitAfter == null) {
         docTarget.dispatchEvent(new Event('alpine:init'))
     } else {
