@@ -109,7 +109,7 @@ it('scrollToKey follows the item, and finds an item added in the same tick', asy
 it('resolves null and warns for an index out of range, a bad index or an unknown key', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const st = v.scrollTop
-    for (const expr of [`scrollToIndex(9999)`, `scrollToIndex(-1)`, `scrollToIndex(2.5)`, `scrollToIndex('3')`, `scrollToKey('nope')`]) {
+    for (const expr of [`scrollToIndex(9999)`, `scrollToIndex(-1)`, `scrollToIndex(2.5)`, `scrollToIndex('x3')`, `scrollToKey('nope')`]) {
         expect(await api(`$virtual('list').${expr}`)).toBe(null)
     }
     expect(v.scrollTop).toBe(st)
@@ -162,14 +162,31 @@ it('removes its input listeners when done, and does not take focus', async () =>
     const rm = v.removeEventListener
     v.removeEventListener = function (type) { removed.push(type); return rm.apply(this, arguments) }
     await api(`$virtual('list').scrollToIndex(60)`)
+    await frame(30)
     v.removeEventListener = rm
-    expect(removed.sort()).toEqual(['keydown', 'pointerdown', 'touchstart', 'wheel'])
+    expect([...new Set(removed)].sort()).toEqual(['touchstart', 'wheel'])
     expect(document.activeElement).toBe(out)
 })
 
-it('a user wheel cancels a smooth call', async () => {
+it('a scroll key cancels a smooth call; typing in a field does not', async () => {
     const p = api(`$virtual('list').scrollToIndex(450, { behavior: 'smooth' })`)
     await frame(1)
-    v.dispatchEvent(new Event('wheel'))
+    const input = document.createElement('input'); document.body.appendChild(input)
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    await frame(1)
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true }))
     expect(await p).toBe(null)
+    input.remove()
+})
+
+it('accepts an integer-valued numeric string as an index', async () => {
+    expect((await api(`$virtual('list').scrollToIndex('42')`)).textContent).toBe('r42')
+})
+
+it('a scroll it did not write cancels a smooth call', async () => {
+    const p = api(`$virtual('list').scrollToIndex(450, { behavior: 'smooth' })`)
+    await frame(1)
+    v.scrollTop = 0
+    expect(await p).toBe(null)
+    expect(v.scrollTop).toBe(0)
 })

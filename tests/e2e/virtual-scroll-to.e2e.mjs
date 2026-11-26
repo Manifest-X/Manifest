@@ -12,7 +12,7 @@
 import http from 'http'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { readFileSync } from 'fs'
+import { readFileSync, existsSync } from 'fs'
 import puppeteer from 'puppeteer'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -28,6 +28,10 @@ const HELPERS = `<script>
 window.__listen = []
 const add = EventTarget.prototype.addEventListener
 EventTarget.prototype.addEventListener = function (type) { if (this && this.id === 'v') window.__listen.push(type); return add.apply(this, arguments) }
+window.__writes = []; window.__harness = false
+const sd = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')
+Object.defineProperty(Element.prototype, 'scrollTop', { configurable: true, get() { return sd.get.call(this) }, set(x) { if (this.id === 'v' && !window.__harness) window.__writes.push(performance.now()); sd.set.call(this, x) } })
+for (const m of ['scrollTo', 'scrollBy', 'scroll']) { const f = Element.prototype[m]; Element.prototype[m] = function () { if (this.id === 'v' && !window.__harness) window.__writes.push(performance.now()); return f.apply(this, arguments) } }
 window.__obs = 0
 for (const C of ['ResizeObserver', 'MutationObserver', 'IntersectionObserver']) { const O = window[C]; window[C] = class extends O { constructor(cb) { super(cb); window.__obs++ } } }
 window.H = (k) => 20 + ((k * 2654435761) >>> 0) % 181
@@ -36,6 +40,7 @@ window.T = {
   v: () => document.getElementById('v'),
   data: () => Alpine.$data(document.getElementById('app')),
   api: (t = 'v') => Alpine.evaluate(document.getElementById('app'), '$virtual(' + JSON.stringify(t) + ')'),
+  set(y) { window.__harness = true; this.v().scrollTop = y; window.__harness = false },
   row: (n) => document.querySelector('#v .r[data-n="n' + n + '"]'),
   box(r) {
     if (getComputedStyle(r).display !== 'contents') return r.getBoundingClientRect()
@@ -73,10 +78,15 @@ const items = (n, h) => `Array.from({ length: ${n} }, (_, k) => ({ id: k, name: 
 function page(layout, q) {
     const n = Number(q.get('n')) || 3000, h = q.get('h') || 'v', est = Number(q.get('est')) || 40
     const rec = q.get('recycle') ? ', recycle: true' : ''
-    const box = 'height:600px;width:400px;overflow:auto'
+    const box = 'height:600px;width:400px;overflow:auto;' + (q.get('style') || '')
+    const rowAttr = q.get('row') || ''
     let list
     if (layout === 'block') list = `<div id="v" x-virtual="{ estimate: ${est}${rec} }" style="${box}">
       <template x-for="row in items" :key="row.id"><div class="r" :data-n="row.name" :style="'height:' + row.h + 'px'" x-text="row.name"></div></template></div>`
+    else if (layout === 'auto') list = `<div id="v" x-virtual="{ estimate: ${est}${rec} }" style="${box}">
+      <template x-for="row in items" :key="row.id"><div class="r" :data-n="row.name" ${rowAttr}><span x-text="row.name"></span><div class="pad" :style="'height:' + row.h + 'px'"></div></div></template></div>`
+    else if (layout === 'snap') list = `<div id="v" x-virtual="{ estimate: ${est}${rec} }" style="${box};scroll-snap-type:y mandatory">
+      <template x-for="row in items" :key="row.id"><div class="r" :data-n="row.name" :style="'scroll-snap-align:start;height:' + row.h + 'px'" x-text="row.name"></div></template></div>`
     else if (layout === 'table') list = `<div id="v" x-virtual="{ estimate: ${est}${rec} }" style="${box};scroll-padding-top:30px">
       <table style="width:100%;border-collapse:collapse;border-spacing:0"><thead style="position:sticky;top:0;background:#fff"><tr><th style="height:30px">h</th><th>x</th></tr></thead>
       <tbody><template x-for="row in items" :key="row.id"><tr class="r" :data-n="row.name"><td :style="'height:' + row.h + 'px'" x-text="row.name"></td><td>x</td></tr></template></tbody></table></div>`
@@ -95,6 +105,16 @@ function page(layout, q) {
         q.get('base') ? '/baseline/scripts/manifest.virtual.js' : '/scripts/manifest.virtual.js', q.get('rtl') ? 'rtl' : 'ltr')
 }
 
+// On-use loader, no x-virtual on the page until the list is added later (as a route or component would)
+const ONUSE_LIST = `<div id="v" x-virtual="{ estimate: 40 }" style="height:600px;width:400px;overflow:auto"><template x-for="row in items" :key="row.id"><div class="r" :data-n="row.name" :style="'height:' + row.h + 'px'" x-text="row.name"></div></template></div>`
+const ONUSE = `<!doctype html><html><head><meta charset="utf-8">${HELPERS}<link rel="manifest" href="/manifest.json"><script src="/scripts/manifest.js" data-module-base="/scripts" data-alpine="/__alpine.js"></script></head><body>
+<div id="app" x-data="{ items: ${items(3000, 'v')} }">
+  <button id="early" @click="window.__early = $virtual('v').scrollToIndex(10)">early</button>
+  <button id="go" @click="window.__go = $virtual('v').scrollToIndex(1200)">go</button>
+  <div id="slot"></div>
+</div>
+<script>window.addList = () => { const s = document.getElementById('slot'); s.innerHTML = atob('${Buffer.from(ONUSE_LIST).toString('base64')}') }</script></body></html>`
+
 function serve() {
     return new Promise((resolve) => {
         const server = http.createServer((req, res) => {
@@ -103,8 +123,11 @@ function serve() {
             if (u.pathname === '/__alpine.js') return js(ALPINE)
             if (u.pathname === '/scripts/manifest.virtual.js') return js(path.join(SRC, 'scripts/manifest.virtual.js'))
             if (u.pathname === '/baseline/scripts/manifest.virtual.js' && BASELINE) return js(path.join(BASELINE, 'scripts/manifest.virtual.js'))
+            if (u.pathname === '/manifest.json') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"name":"v"}') }
+            if (/^\/scripts\/manifest(\.[\w.]+)?\.js$/.test(u.pathname)) { const f = path.join(SRC, u.pathname); if (!existsSync(f)) { res.writeHead(404); return res.end() } return js(f) }
+            if (u.pathname === '/onuse') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(ONUSE) }
             const layout = u.pathname.slice(1)
-            const ok = ['block', 'table', 'contents', 'grid', 'flex', 'masonry'].includes(layout)
+            const ok = ['block', 'auto', 'snap', 'table', 'contents', 'grid', 'flex', 'masonry'].includes(layout)
             res.writeHead(ok ? 200 : 404, { 'content-type': 'text/html' })
             res.end(ok ? page(layout, u.searchParams) : 'not found')
         })
@@ -118,8 +141,9 @@ async function main() {
     const browser = await puppeteer.launch({ headless: 'shell', args: ['--no-sandbox'] })
     const fails = []
     const check = (ok, label, detail) => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail !== undefined ? '  — ' + JSON.stringify(detail) : ''}`); if (!ok) fails.push(label) }
-    const open = async (route, ready = true) => {
+    const open = async (route, ready = true, dpr) => {
         const p = await browser.newPage()
+        if (dpr) await p.setViewport({ width: 1000, height: 800, deviceScaleFactor: dpr })
         p.errors = []; p.warns = []
         p.on('pageerror', (e) => p.errors.push(e.message))
         p.on('console', (m) => { if ((m.type() === 'warning' || m.type() === 'warn')) p.warns.push(m.text()) })
@@ -264,14 +288,14 @@ async function main() {
                 return { first: a && a.dataset.n, second: b && b.dataset.n, at: T.at(2500) }
             })
             check(!r2.error && r2.first === null && r2.second === 'n2500' && aligned(r2.at), 'smooth in flight, then another smooth: the second lands', r2)
-            // A user wheel cancels a smooth scroll
-            const r3 = await run(p, async () => {
-                const pr = T.api().scrollToIndex(10, { behavior: 'smooth' })
-                await frames_(4)
-                T.v().dispatchEvent(new WheelEvent('wheel', { deltaY: 10 }))
-                const el = await pr
-                return { el: el && el.dataset.n }
-            })
+            // A real wheel by the user cancels a smooth scroll
+            await run(p, () => { window.__w = undefined; T.api().scrollToIndex(10, { behavior: 'smooth' }).then((e) => { window.__w = e ? e.dataset.n : null }) })
+            await run(p, () => frames_(4))
+            const vb = await (await p.$('#v')).boundingBox()
+            await p.mouse.move(vb.x + 100, vb.y + 300)
+            await p.mouse.wheel({ deltaY: 120 })
+            await p.waitForFunction(() => window.__w !== undefined, { timeout: 3000 }).catch(() => null)
+            const r3 = { el: await run(p, () => window.__w) }
             check(!r3.error && r3.el === null, 'smooth: a wheel by the user cancels it (resolves null)', r3)
             await done(p, 'smooth')
         }
@@ -353,6 +377,143 @@ async function main() {
             })
             check(!r.error && r.same === 'outside' && r.now && aligned(r.at), 'focus: not moved by the jump; focus({ preventScroll }) on the resolved row keeps it in place', r)
             await done(p, 'focus')
+        }
+
+        // Rows that size late, after the target first landed: followed until quiet
+        {
+            const grow = encodeURIComponent(`x-init="setTimeout(() => $el.querySelector('.pad').style.height = (row.h + 80) + 'px', 120)"`)
+            const img = encodeURIComponent(`x-init="const i = new Image(); i.style.display = 'block'; i.width = 50; setTimeout(() => { i.height = 50 + (row.id % 7) * 20; $el.appendChild(i) }, 40 + (row.id % 5) * 30)"`)
+            for (const [route, label, n, opts] of [[`/auto?row=${grow}`, 'rows grow 80px 120ms after mount, center', 1800, { align: 'center' }], [`/auto?row=${grow}`, 'rows grow 80px 120ms after mount, start', 1400, {}], [`/auto?row=${grow}`, 'rows grow, smooth', 600, { behavior: 'smooth' }], [`/auto?row=${img}`, 'late images 40..160ms, end', 1000, { align: 'end' }], [`/auto?row=${img}`, 'late images, start', 2000, {}]]) {
+                const p = await open(route)
+                const r = await run(p, async (n, o) => { const el = await T.api().scrollToIndex(n, o); await new Promise((r) => setTimeout(r, 1500)); await T.stable(); return { el: el && el.dataset.n, at: T.at(n) } }, n, opts)
+                check(!r.error && r.el === 'n' + n && aligned(r.at, opts.align), `late sizing: ${label}: still aligned once idle`, r)
+                await done(p, `late sizing ${label}`)
+            }
+            // Rows that never stop changing: the follow is bounded, writes stop
+            const p = await open('/auto?style=overflow-anchor:none&row=' + encodeURIComponent(`x-init="const f = () => { if (!$el.isConnected) return; $el.querySelector('.pad').style.height = (row.h + (Math.random() * 30 | 0)) + 'px'; requestAnimationFrame(f) }; requestAnimationFrame(f)"`), false)
+            const r = await run(p, async () => {
+                const el = await Promise.race([T.api().scrollToIndex(1500, { align: 'center' }), new Promise((r) => setTimeout(() => r('TIMEOUT'), 8000))])
+                await new Promise((r) => setTimeout(r, 4000))
+                const w = window.__writes.length; await frames_(30)
+                return { el: el === 'TIMEOUT' ? el : el && el.dataset.n, writesLater: window.__writes.length - w }
+            })
+            check(!r.error && r.el === 'n1500' && r.writesLater === 0, 'late sizing: rows changing every frame: resolves, and stops writing within the cap', r)
+            await p.close()
+        }
+
+        // Outside scrolling cancels: keys with focus on <body>, author code; no misfire on DPR, clamping, anchoring
+        {
+            for (const key of ['PageDown', 'End']) {
+                const p = await open('/block')
+                const vb = await (await p.$('#v')).boundingBox()
+                await p.mouse.click(vb.x + 100, vb.y + 100)
+                await run(p, () => T.stable())
+                await run(p, () => { window.__k = undefined; T.api().scrollToIndex(2000, { behavior: 'smooth' }).then((e) => { window.__k = e ? e.dataset.n : null }) })
+                await run(p, () => frames_(10))
+                const active = await run(p, () => document.activeElement.tagName)
+                await run(p, () => { window.__mark = performance.now() })
+                await p.keyboard.press(key)
+                await run(p, () => new Promise((r) => setTimeout(r, 1200)))
+                const r = await run(p, () => ({ el: window.__k, writesAfter: window.__writes.filter((t) => t > window.__mark + 50).length }))
+                check(!r.error && active === 'BODY' && r.el === null && r.writesAfter === 0, `${key} with focus on <body> during a smooth scroll: cancels (null), no more writes`, { active, ...r })
+                await p.close()
+            }
+            const p = await open('/block')
+            const r = await run(p, async () => {
+                const pr = T.api().scrollToIndex(2500, { behavior: 'smooth' })
+                await frames_(8)
+                T.set(100)
+                const el = await pr
+                const w = window.__writes.length; await frames_(20)
+                return { el: el && el.dataset.n, st: T.v().scrollTop, writesLater: window.__writes.length - w }
+            })
+            check(!r.error && r.el === null && r.st === 100 && r.writesLater === 0, 'author scrollTop = 100 mid-flight: cancels and stays where the author put it', r)
+            await p.close()
+            for (const dpr of [1.25, 1.5, 2.625]) {
+                const q = await open('/auto', true, dpr)
+                for (const [n, o] of [[1700, {}], [900, { behavior: 'smooth', align: 'center' }], [2999, {}], [0, { behavior: 'smooth' }]]) {
+                    const r = await run(q, async (n, o) => { const el = await T.api().scrollToIndex(n, o); await T.stable(); return { el: el && el.dataset.n, at: T.at(n) } }, n, o)
+                    check(!r.error && r.el === 'n' + n && aligned(r.at, o.align), `DPR ${dpr}: index ${n} ${JSON.stringify(o)} lands (no false cancel)`, r)
+                }
+                await done(q, `DPR ${dpr}`)
+            }
+            // Mandatory scroll snap: the snapped position is accepted, nothing fights it
+            const sn = await open('/snap')
+            const rs = await run(sn, async () => {
+                const t0 = performance.now()
+                const el = await T.api().scrollToIndex(1500)
+                const ms = performance.now() - t0
+                await new Promise((r) => setTimeout(r, 500))
+                const w = window.__writes.length; await frames_(20)
+                return { el: el && el.dataset.n, ms: Math.round(ms), writesLater: window.__writes.length - w, at: T.at(1500) }
+            })
+            check(!rs.error && rs.el === 'n1500' && rs.ms < 2000 && rs.writesLater === 0 && rs.at && rs.at.top > -rs.at.vh && rs.at.top < rs.at.vh, 'scroll-snap mandatory: resolves with the row near the top, then stops', rs)
+            await done(sn, 'scroll snap')
+        }
+
+        // Odd inputs always settle with null and never throw
+        {
+            const p = await open('/block')
+            const r = await run(p, async () => {
+                const api = T.api(), out = {}
+                const tryCall = async (label, fn) => { try { const pr = fn(); const v = await Promise.race([pr, new Promise((r) => setTimeout(() => r('PENDING'), 2000))]); out[label] = v === null ? 'null' : v === 'PENDING' ? v : 'value' } catch (e) { out[label] = 'THREW ' + e.message } }
+                await tryCall('key null-proto', () => api.scrollToKey(Object.create(null)))
+                await tryCall('key throwing toString', () => api.scrollToKey({ toString() { throw new Error('boom') } }))
+                await tryCall('key symbol', () => api.scrollToKey(Symbol('x')))
+                await tryCall('offset symbol', () => api.scrollToIndex(12, { offset: Symbol() }))
+                await tryCall('throwing getter', () => api.scrollToIndex(13, { get align() { throw new Error('g') } }))
+                await tryCall('list null-proto', () => Alpine.evaluate(document.getElementById('app'), '{ f: $virtual }').f(Object.create(null)).scrollToIndex(5))
+                await tryCall('list symbol', () => Alpine.evaluate(document.getElementById('app'), '{ f: $virtual }').f(Symbol('s')).scrollToIndex(5))
+                return out
+            })
+            check(!r.error && Object.values(r).every((v) => v === 'null'), 'odd keys, options and list targets: settle null, never throw', r)
+            await done(p, 'odd inputs')
+        }
+
+        // scroll-padding in %, numeric strings, warnings once, repeated smooth calls join
+        {
+            const p = await open('/block?style=scroll-padding-top:10%')
+            await land(p, 'scroll-padding-top 10% (60px of 600)', 1000, {}, 'scrollToIndex', 1000, 60)
+            await p.close()
+            const q = await open('/block')
+            await land(q, "scrollToIndex('1234') (x-model without .number)", 1234, {}, 'scrollToIndex', '1234')
+            const nowarn = q.warns.filter((w) => w.includes('[x-virtual]')).length
+            await run(q, async () => { await T.api().scrollToIndex(9999); await T.api().scrollToIndex(9999); await T.api().scrollToKey('nope'); await T.api().scrollToKey('nope') })
+            const warns = q.warns.filter((w) => w.includes('[x-virtual]'))
+            check(nowarn === 0 && warns.length === 2, 'numeric string warns nothing; a repeated warning shows once per list and reason', warns)
+            const r = await run(q, async () => {
+                T.set(0); await T.stable()
+                const all = []; let on = true
+                const tick = () => { if (!on) return; all.push(T.api().scrollToIndex(800, { behavior: 'smooth' })); requestAnimationFrame(tick) }
+                tick()
+                await new Promise((r) => setTimeout(r, 2500)); on = false
+                const res = await Promise.all(all)
+                await T.stable()
+                return { calls: all.length, landed: res.filter((e) => e && e.dataset.n === 'n800').length, at: T.at(800) }
+            })
+            check(!r.error && r.landed === r.calls && aligned(r.at), 'the same smooth call every frame joins the one in flight and arrives', r)
+            await done(q, 'padding, strings, warnings, joins')
+        }
+
+        // On-use loader: $virtual before the module or the list exists
+        {
+            const p = await browser.newPage()
+            p.errors = []
+            p.on('pageerror', (e) => p.errors.push(e.message))
+            await p.goto(base + '/onuse', { waitUntil: 'load' })
+            await p.waitForFunction(() => window.Alpine && document.getElementById('early'), { timeout: 10000 })
+            await p.click('#early')
+            const early = await run(p, async () => { const v = window.__early; return { isPromise: !!v && typeof v.then === 'function', el: v && typeof v.then === 'function' ? await v : 'n/a' } })
+            const loadedEarly = await run(p, () => typeof window.ensureVirtualPluginInitialized)
+            await run(p, () => window.addList())
+            await p.waitForFunction(() => document.querySelector('#v [data-virtual-spacer]'), { timeout: 10000 })
+            await run(p, () => T.stable())
+            await p.click('#go')
+            const go = await run(p, async () => { const el = await window.__go; return { el: el && el.dataset.n, at: T.at(1200) } })
+            check(!early.error && early.isPromise && early.el === null && loadedEarly === 'function', 'on use: $virtual(id).scrollToIndex() before the module or list exists returns a promise resolving null (module loaded by the call)', { ...early, loadedEarly })
+            check(!go.error && go.el === 'n1200' && aligned(go.at), 'on use: once the list is shown, the call lands', go)
+            check(p.errors.length === 0, 'on use: no page errors', p.errors)
+            await p.close()
         }
 
         // No cost when unused: no listener or observer beyond what the list already had
