@@ -478,12 +478,30 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         });
     }
 
+    // Leading equal('$id', v) on the source's own array: one row from the $id index.
+    // A miss or repeated ids scan as before
+    function idLookup(query) {
+        if (!dataSourceName || !Array.isArray(query) || query[0] !== 'equal' || query[1] !== '$id' || query.length < 3) return null;
+        const value = query[2];
+        if (typeof value !== 'string' && !(typeof value === 'number' && value === value)) return null;
+        const ds = window.ManifestDataStore;
+        const base = toRaw(array);
+        if (!ds?.indexOfUniqueRow || base !== ds.getRawData?.(dataSourceName)) return null;
+        const i = ds.indexOfUniqueRow(base, value);
+        if (i === null || i < 0) return null;
+        const item = base[i];
+        const raw = toRaw(item);
+        const live = base !== array && !!Alpine.reactive;
+        return { raws: [raw], out: raw !== item ? () => item : live ? (r) => Alpine.reactive(r) : IDENTITY };
+    }
+
     function runQuery(queries) {
-        const { raws, out } = operatorRows(array);
+        const hit = idLookup(queries[0]);
+        const { raws, out } = hit || operatorRows(array);
         let result = raws;
 
         // Process each query in order
-        for (const query of queries) {
+        for (const query of hit ? queries.slice(1) : queries) {
             if (!Array.isArray(query) || query.length === 0) continue;
 
             const [method, ...args] = query;

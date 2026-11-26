@@ -368,8 +368,14 @@ const rowIndexes = new WeakMap(); // raw array -> { map, len }
 
 function buildRowIndex(arr) {
     const map = new Map();
-    for (let i = 0; i < arr.length; i++) { const id = rowKey(arr[i]); if (id !== null) map.set(id, i); }
-    const entry = { map, len: arr.length };
+    let dup = false;
+    for (let i = 0; i < arr.length; i++) {
+        const id = rowKey(arr[i]);
+        if (id === null) continue;
+        if (map.has(id)) dup = true;
+        map.set(id, i);
+    }
+    const entry = { map, len: arr.length, dup };
     rowIndexes.set(arr, entry);
     return entry;
 }
@@ -389,8 +395,19 @@ function dropRowIndex(arr) { if (arr) rowIndexes.delete(arr); }
 function extendRowIndex(arr) {
     const entry = rowIndexes.get(arr);
     if (!entry || entry.len > arr.length) return;
-    for (let i = entry.len; i < arr.length; i++) { const id = rowKey(arr[i]); if (id !== null) entry.map.set(id, i); }
+    for (let i = entry.len; i < arr.length; i++) {
+        const id = rowKey(arr[i]);
+        if (id === null) continue;
+        if (entry.map.has(id)) entry.dup = true;
+        entry.map.set(id, i);
+    }
     entry.len = arr.length;
+}
+
+// Position of the only row with this $id; -1 when absent, null when ids repeat (caller scans)
+function indexOfUniqueRow(arr, id) {
+    const i = indexOfRow(arr, id);
+    return rowIndexes.get(arr)?.dup ? null : i;
 }
 
 function findRow(dataSourceName, id) {
@@ -1972,6 +1989,7 @@ window.ManifestDataStore = {
     insertRowAt,
     removeRowAt,
     indexOfRow,
+    indexOfUniqueRow,
     findRow,
     isRowPending,
     holdWrite,
@@ -5176,12 +5194,30 @@ function attachArrayMethods(array, dataSourceName, reloadDataSource) {
         });
     }
 
+    // Leading equal('$id', v) on the source's own array: one row from the $id index.
+    // A miss or repeated ids scan as before
+    function idLookup(query) {
+        if (!dataSourceName || !Array.isArray(query) || query[0] !== 'equal' || query[1] !== '$id' || query.length < 3) return null;
+        const value = query[2];
+        if (typeof value !== 'string' && !(typeof value === 'number' && value === value)) return null;
+        const ds = window.ManifestDataStore;
+        const base = toRaw(array);
+        if (!ds?.indexOfUniqueRow || base !== ds.getRawData?.(dataSourceName)) return null;
+        const i = ds.indexOfUniqueRow(base, value);
+        if (i === null || i < 0) return null;
+        const item = base[i];
+        const raw = toRaw(item);
+        const live = base !== array && !!Alpine.reactive;
+        return { raws: [raw], out: raw !== item ? () => item : live ? (r) => Alpine.reactive(r) : IDENTITY };
+    }
+
     function runQuery(queries) {
-        const { raws, out } = operatorRows(array);
+        const hit = idLookup(queries[0]);
+        const { raws, out } = hit || operatorRows(array);
         let result = raws;
 
         // Process each query in order
-        for (const query of queries) {
+        for (const query of hit ? queries.slice(1) : queries) {
             if (!Array.isArray(query) || query.length === 0) continue;
 
             const [method, ...args] = query;

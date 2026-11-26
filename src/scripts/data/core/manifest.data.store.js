@@ -78,8 +78,14 @@ const rowIndexes = new WeakMap(); // raw array -> { map, len }
 
 function buildRowIndex(arr) {
     const map = new Map();
-    for (let i = 0; i < arr.length; i++) { const id = rowKey(arr[i]); if (id !== null) map.set(id, i); }
-    const entry = { map, len: arr.length };
+    let dup = false;
+    for (let i = 0; i < arr.length; i++) {
+        const id = rowKey(arr[i]);
+        if (id === null) continue;
+        if (map.has(id)) dup = true;
+        map.set(id, i);
+    }
+    const entry = { map, len: arr.length, dup };
     rowIndexes.set(arr, entry);
     return entry;
 }
@@ -99,8 +105,19 @@ function dropRowIndex(arr) { if (arr) rowIndexes.delete(arr); }
 function extendRowIndex(arr) {
     const entry = rowIndexes.get(arr);
     if (!entry || entry.len > arr.length) return;
-    for (let i = entry.len; i < arr.length; i++) { const id = rowKey(arr[i]); if (id !== null) entry.map.set(id, i); }
+    for (let i = entry.len; i < arr.length; i++) {
+        const id = rowKey(arr[i]);
+        if (id === null) continue;
+        if (entry.map.has(id)) entry.dup = true;
+        entry.map.set(id, i);
+    }
     entry.len = arr.length;
+}
+
+// Position of the only row with this $id; -1 when absent, null when ids repeat (caller scans)
+function indexOfUniqueRow(arr, id) {
+    const i = indexOfRow(arr, id);
+    return rowIndexes.get(arr)?.dup ? null : i;
 }
 
 function findRow(dataSourceName, id) {
@@ -1682,6 +1699,7 @@ window.ManifestDataStore = {
     insertRowAt,
     removeRowAt,
     indexOfRow,
+    indexOfUniqueRow,
     findRow,
     isRowPending,
     holdWrite,
