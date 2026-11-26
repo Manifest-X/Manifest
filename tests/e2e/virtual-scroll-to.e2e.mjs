@@ -85,7 +85,7 @@ function page(layout, q) {
       <template x-for="row in items" :key="row.id"><div class="r" :data-n="row.name" :style="'height:' + row.h + 'px'" x-text="row.name"></div></template></div>`
     else if (layout === 'auto') list = `<div id="v" x-virtual="{ estimate: ${est}${rec} }" style="${box}">
       <template x-for="row in items" :key="row.id"><div class="r" :data-n="row.name" ${rowAttr}><span x-text="row.name"></span><div class="pad" :style="'height:' + row.h + 'px'"></div></div></template></div>`
-    else if (layout === 'snap') list = `<div id="v" x-virtual="{ estimate: ${est}${rec} }" style="${box};scroll-snap-type:y mandatory">
+    else if (layout === 'snap') list = `<div id="v" x-virtual="{ estimate: ${est}${rec} }" style="${box};scroll-snap-type:y ${q.get('snap') || 'mandatory'}">
       <template x-for="row in items" :key="row.id"><div class="r" :data-n="row.name" :style="'scroll-snap-align:start;height:' + row.h + 'px'" x-text="row.name"></div></template></div>`
     else if (layout === 'table') list = `<div id="v" x-virtual="{ estimate: ${est}${rec} }" style="${box};scroll-padding-top:30px">
       <table style="width:100%;border-collapse:collapse;border-spacing:0"><thead style="position:sticky;top:0;background:#fff"><tr><th style="height:30px">h</th><th>x</th></tr></thead>
@@ -101,7 +101,7 @@ function page(layout, q) {
     const wrap = q.get('wrap')
     if (wrap === 'nested') list = `<div id="outer" style="height:500px;overflow:auto"><div style="height:300px">above</div>${list}<div style="height:800px">below</div></div>`
     if (wrap === 'hidden') list = `<div x-show="shown">${list}</div>`
-    return shell(`<button id="outside">outside</button><div id="app" x-data="{ shown: ${wrap === 'hidden' ? 'false' : 'true'}, items: ${items(n, h)} }">${list}</div>`,
+    return shell(`${q.get('body') || ''}<button id="outside">outside</button><div id="app" x-data="{ shown: ${wrap === 'hidden' ? 'false' : 'true'}, items: ${items(n, h)} }">${list}</div>`,
         q.get('base') ? '/baseline/scripts/manifest.virtual.js' : '/scripts/manifest.virtual.js', q.get('rtl') ? 'rtl' : 'ltr')
 }
 
@@ -514,6 +514,136 @@ async function main() {
             check(!go.error && go.el === 'n1200' && aligned(go.at), 'on use: once the list is shown, the call lands', go)
             check(p.errors.length === 0, 'on use: no page errors', p.errors)
             await p.close()
+        }
+
+        // Round 2: the rect is at the requested alignment AT resolve, every layout, recycle on and off
+        {
+            const targets = [[1777, {}], [1200, { align: 'center' }], [400, { align: 'end' }], [2500, {}], [60, { align: 'center' }], [1900, { behavior: 'smooth' }], [1300, { align: 'nearest' }]]
+            for (const layout of ['block', 'auto', 'table', 'contents', 'grid', 'flex', 'masonry']) for (const rec of ['', '&recycle=1']) {
+                if (layout === 'masonry' && rec) continue
+                const pad = layout === 'table' ? 30 : 0
+                const p = await open(`/${layout}?h=v&n=${layout === 'grid' || layout === 'flex' ? 8000 : 3000}${rec}`)
+                const bad = []
+                for (const [n, o] of targets) {
+                    const r = await run(p, async (n, o) => { const e = await T.api().scrollToIndex(n, o); return { el: e && e.dataset.n, at: T.at(n) } }, n, o)
+                    if (r.error || r.el !== 'n' + n || !aligned(r.at, o.align, pad)) bad.push({ n, o, ...r })
+                }
+                check(bad.length === 0, `at resolve: ${layout}${rec ? ' + recycle' : ''}: the row's rect is at the alignment when the promise resolves (${targets.length} targets)`, bad.slice(0, 3))
+                await done(p, `at resolve ${layout}${rec}`)
+            }
+            for (const rec of ['&recycle=1', '']) {
+                const p = await open('/block?h=v' + rec)
+                const r = await run(p, async () => {
+                    const out = []
+                    for (const n of [1777, 2500, 400]) {
+                        const e = await T.api().scrollToIndex(n); const a = T.at(n)
+                        e.tabIndex = -1; e.focus()
+                        await frames_(30)
+                        out.push({ n, a: a && [a.top, a.bottom], b: T.at(n) && [T.at(n).top, T.at(n).bottom], focused: document.activeElement === e })
+                    }
+                    return out
+                })
+                check(Array.isArray(r) && r.every((x) => x.a && Math.abs(x.a[0]) <= TOL && x.b && Math.abs(x.b[0]) <= TOL && x.focused), `focus at resolve${rec ? ' (recycle)' : ''}: focusing the resolved row does not move it`, r)
+                await done(p, `focus at resolve${rec}`)
+            }
+        }
+
+        // Round 2: keys only cancel when they would scroll this list
+        {
+            const body = encodeURIComponent('<div id="other" tabindex="0" style="height:100px;overflow:auto"><div style="height:2000px">other</div></div><div id="slider" tabindex="0" role="slider" style="height:20px">w</div>')
+            const p = await open('/block?h=v&wrap=hidden&body=' + body, false)
+            await run(p, () => { window.__d = 'pending'; T.api().scrollToIndex(1300).then((e) => { window.__d = e ? e.dataset.n : null }) })
+            await p.click('#other'); await p.keyboard.press('Space')
+            await p.focus('#slider'); await p.keyboard.press('ArrowDown')
+            await run(p, () => frames_(5))
+            const waiting = await run(p, () => window.__d)
+            await run(p, () => { T.data().shown = true })
+            await p.waitForFunction(() => window.__d !== 'pending', { timeout: 5000 }).catch(() => null)
+            const r = await run(p, () => ({ el: window.__d, at: T.at(1300) }))
+            check(waiting === 'pending' && r.el === 'n1300' && aligned(r.at), 'hidden list waiting: Space in another scroller and ArrowDown on a slider do not cancel it; it lands when shown', { waiting, ...r })
+            await p.close()
+            const q = await open('/block?h=v&body=' + body)
+            await q.focus('#slider')
+            await run(q, () => { window.__d = 'pending'; T.api().scrollToIndex(2400, { behavior: 'smooth' }).then((e) => { window.__d = e ? e.dataset.n : null }) })
+            await run(q, () => frames_(5))
+            await q.keyboard.press('ArrowRight'); await q.keyboard.press('ArrowDown')
+            await q.waitForFunction(() => window.__d !== 'pending', { timeout: 5000 }).catch(() => null)
+            const r2 = await run(q, () => ({ el: window.__d, at: T.at(2400) }))
+            check(r2.el === 'n2400' && aligned(r2.at), 'visible smooth scroll: arrows on an unrelated slider do not cancel it', r2)
+            await q.close()
+            // Body focus PageDown / End still cancel, every time
+            const miss = []
+            for (let i = 0; i < 10; i++) for (const key of ['PageDown', 'End']) {
+                const b = await open('/block')
+                const vb = await (await b.$('#v')).boundingBox()
+                await b.mouse.click(vb.x + 100, vb.y + 100)
+                await run(b, () => { window.__k = undefined; T.api().scrollToIndex(2000, { behavior: 'smooth' }).then((e) => { window.__k = e ? e.dataset.n : null }) })
+                await run(b, () => frames_(10))
+                await run(b, () => { window.__mark = performance.now() })
+                await b.keyboard.press(key)
+                await run(b, () => new Promise((r) => setTimeout(r, 900)))
+                const r = await run(b, () => ({ el: window.__k, active: document.activeElement.tagName, writesAfter: window.__writes.filter((t) => t > window.__mark + 50).length }))
+                if (r.el !== null || r.writesAfter || r.active !== 'BODY') miss.push({ i, key, ...r })
+                await b.close()
+            }
+            check(miss.length === 0, 'PageDown / End with focus on <body>: cancel in 20 of 20 runs', miss)
+        }
+
+        // Round 2: scroll snap, one instant jump, the snapped position accepted
+        for (const type of ['mandatory', 'proximity']) {
+            const p = await open(`/snap?h=v&snap=${type}`)
+            const bad = []
+            for (const beh of ['instant', 'smooth']) for (const align of ['start', 'center', 'end', 'nearest']) {
+                const r = await run(p, async (beh, align) => {
+                    T.set(3000); await new Promise((r) => setTimeout(r, 150))
+                    const t0 = performance.now(), w0 = window.__writes.length
+                    const e = await T.api().scrollToIndex(1700, { behavior: beh, align })
+                    const ms = performance.now() - t0, a = T.at(1700), w = window.__writes.length - w0
+                    await new Promise((r) => setTimeout(r, 300))
+                    return { el: e && e.dataset.n, ms: Math.round(ms), writes: w, later: window.__writes.length - w0 - w, a }
+                }, beh, align)
+                const vis = r.a && r.a.bottom > 0 && r.a.top < r.a.vh
+                if (r.error || r.el !== 'n1700' || !vis || r.ms > 300 || r.writes > 6 || r.later) bad.push({ beh, align, ...r })
+            }
+            check(bad.length === 0, `scroll-snap ${type}: every align, instant and smooth: resolves fast with the row visible, a few writes, none after`, bad.slice(0, 3))
+            await done(p, `snap ${type}`)
+        }
+
+        // Round 2: repeated call after the item moved; numeric strings; calc() padding; anchoring restored
+        {
+            const p = await open('/block?h=v')
+            const r = await run(p, async () => {
+                const a = await T.api().scrollToKey(1700, { align: 'center' })
+                T.data().items.unshift(...Array.from({ length: 30 }, (_, k) => ({ id: 'm' + k, name: 'm' + k, h: 33 })))
+                const b = await T.api().scrollToKey(1700, { align: 'center' })
+                return { a: a && a.dataset.n, b: b && b.dataset.n, at: T.at(1700) }
+            })
+            check(!r.error && r.a === 'n1700' && r.b === 'n1700' && aligned(r.at, 'center'), 'the same call again after the item moved during the follow: lands it again', r)
+            await done(p, 'repeat after move')
+            const ps = await open('/block?h=v')
+            const s1 = await run(ps, async () => {
+                const out = {}
+                for (const v of [' 5 ', '5.0', '+7', '1e3', '0x10', '5px', '', '-0']) { const e = await T.api().scrollToIndex(v); out[JSON.stringify(v)] = e ? e.dataset.n : null }
+                return out
+            })
+            const w = ps.warns.filter((x) => x.includes('whole number'))
+            check(s1['" 5 "'] === 'n5' && Object.entries(s1).filter(([k]) => k !== '" 5 "').every(([, v]) => v === null) && w.some((x) => x.includes("'5px'")) && w.some((x) => x.includes("'+7'")), "numeric strings: only digits (spaces around allowed); the warning quotes the value", { s1, w })
+            await done(ps, 'numeric strings')
+            const c = await open('/block?h=v&style=' + encodeURIComponent('scroll-padding-top:calc(5% + 10px)'))
+            await land(c, 'scroll-padding-top calc(5% + 10px) = 40px', 1000, {}, 'scrollToIndex', 1000, 40)
+            await c.close()
+            const an = await open('/block?h=v')
+            const ra = await run(an, async () => {
+                const v = T.v(), pr = T.api().scrollToIndex(2000, { behavior: 'smooth' })
+                await frames_(4)
+                v.setAttribute('style', v.getAttribute('style').replace(/overflow-anchor:[^;]*;?/, ''))
+                await frames_(2)
+                const during = v.style.overflowAnchor
+                await pr; await new Promise((r) => setTimeout(r, 3600))
+                return { during, after: v.style.overflowAnchor }
+            })
+            check(ra.during === 'none' && ra.after === '', 'a style rewrite mid-seek: anchoring stays off during the seek and is restored after', ra)
+            await an.close()
         }
 
         // No cost when unused: no listener or observer beyond what the list already had
