@@ -767,13 +767,22 @@ function initializeAuthStore() {
             const list = this.currentTeamMemberships || [];
             return list.length && list.length < (this.currentTeamMembershipsTotal || 0) ? list[list.length - 1].$id : null;
         },
-        _ownMembership: null, // { teamId, userId, membership }: the user's own membership as of the newest listing
+        _ownMembership: null, // { teamId, userId, membership, status }: the user's own membership as of the newest listing
         _ownGen: 0, // bumped by each listing and reset; an older own-membership answer is dropped
         _ownRetryTimer: null,
-        _ownRetryMs: 5000, // delay of the single retry after a failed own-membership fetch
+        _ownRetryDelays: [5000, 15000, 45000], // retries after a failed own-membership fetch
         // The current user's membership in the current team (read-only; null until known or when there is none)
         get currentTeamMembership() {
             return this._currentMembership();
+        },
+        // Why currentTeamMembership is what it is: 'loading' | 'ready' | 'none' | 'error', or null with no current team or signed out
+        get currentTeamMembershipStatus() {
+            const teamId = this.currentTeam?.$id;
+            const userId = this.user?.$id;
+            if (!teamId || !userId || !this.isAuthenticated) return null;
+            if (this._currentMembership()) return 'ready';
+            const own = this._ownMembership;
+            return own && own.teamId === teamId && own.userId === userId && own.status !== 'ready' ? own.status : 'loading';
         },
         deletedTemplateTeams: [],
         deletedTemplateRoles: [], // Deleted template roles (can be reapplied)
@@ -1239,19 +1248,21 @@ function initializeAuthStore() {
             const gen = ++this._ownGen;
             if (this._ownRetryTimer) { clearTimeout(this._ownRetryTimer); this._ownRetryTimer = null; }
             const listed = page.find(m => m.userId === userId);
-            if (listed || (!filtered && !(total > page.length))) {
-                this._ownMembership = { teamId, userId, membership: listed || null };
-                return;
-            }
-            await this._fetchOwnMembership(teamId, userId, gen, true);
+            if (listed) { this._ownMembership = { teamId, userId, membership: listed, status: 'ready' }; return; }
+            if (!filtered && !(total > page.length)) { this._ownMembership = { teamId, userId, membership: null, status: 'none' }; return; }
+            await this._fetchOwnMembership(teamId, userId, gen, 0);
         },
 
         // Applied only while it is the newest word for this team and user; a hung fetch is abandoned (denied) after the bounded wait
-        async _fetchOwnMembership(teamId, userId, gen, retry) {
+        async _fetchOwnMembership(teamId, userId, gen, attempt) {
             const current = () => this._ownGen === gen && this.currentTeam?.$id === teamId && this.user?.$id === userId;
-            const deny = () => { this._ownMembership = { teamId, userId, membership: null }; };
+            const set = (membership, status) => { this._ownMembership = { teamId, userId, membership, status }; };
+            const failed = () => { set(null, 'error'); this._scheduleOwnRetry(teamId, userId, gen, attempt); };
             const Query = window.Appwrite?.Query;
-            if (!Query?.equal) { deny(); return; }
+            if (!Query?.equal) { set(null, 'error'); return; }
+            // A known membership is served while this runs; otherwise the status reads loading
+            const known = this._ownMembership;
+            if (!(known && known.teamId === teamId && known.userId === userId && known.membership)) set(null, 'loading');
             const request = (async () => {
                 const queries = [Query.equal('userId', [userId]), ...(Query.limit ? [Query.limit(1)] : [])];
                 const result = await this._appwrite.teams.listMemberships({ teamId, queries });
@@ -1266,32 +1277,30 @@ function initializeAuthStore() {
             clearTimeout(timer);
             if (!current()) return;
             if (answer.timedOut) {
-                deny();
+                set(null, 'error');
                 request.then(late => {
                     if (!current()) return;
-                    if (late.error) { if (retry) this._scheduleOwnRetry(teamId, userId, gen); return; }
-                    this._ownMembership = { teamId, userId, membership: late.membership };
+                    if (late.error) { failed(); return; }
+                    set(late.membership, late.membership ? 'ready' : 'none');
                     if (this.refreshPermissionCache) this.refreshPermissionCache().catch(() => { });
                 });
                 return;
             }
-            if (answer.error) {
-                deny();
-                if (retry) this._scheduleOwnRetry(teamId, userId, gen);
-                return;
-            }
-            this._ownMembership = { teamId, userId, membership: answer.membership };
+            if (answer.error) { failed(); return; }
+            set(answer.membership, answer.membership ? 'ready' : 'none');
         },
 
-        // One delayed retry after a failed own-membership fetch, dropped if anything newer arrives first
-        _scheduleOwnRetry(teamId, userId, gen) {
+        // Retries after a failed own-membership fetch, on a capped backoff; any newer listing, team switch or reset drops them
+        _scheduleOwnRetry(teamId, userId, gen, attempt) {
+            const delays = this._ownRetryDelays || [];
+            if (attempt >= delays.length) return;
             if (this._ownRetryTimer) clearTimeout(this._ownRetryTimer);
             this._ownRetryTimer = setTimeout(async () => {
                 this._ownRetryTimer = null;
                 if (this._ownGen !== gen || this.currentTeam?.$id !== teamId || this.user?.$id !== userId) return;
-                await this._fetchOwnMembership(teamId, userId, gen, false);
+                await this._fetchOwnMembership(teamId, userId, gen, attempt + 1);
                 if (this._ownGen === gen && this.refreshPermissionCache) this.refreshPermissionCache().catch(() => { });
-            }, this._ownRetryMs ?? 5000);
+            }, delays[attempt]);
         },
 
         // Offline-booted tab: re-run the session check once Appwrite is reachable
