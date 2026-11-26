@@ -5,7 +5,8 @@
  * works virtualized or not and shared columns/sticky/flex-wrap behave normally;
  * masonry positions absolutely. Options: estimate (px or {width,height}), overscan,
  * mode ('rows'|'gallery'|'masonry'; masonry must be explicit, others auto-detect),
- * recycle (true: rows leaving the window are rebound to rows entering it; line modes only).
+ * recycle (true: rows leaving the window are rebound to rows entering it, which then get
+ * `manifest:virtual-recycle`; line modes only, not with x-transition in rows).
  * With several x-for templates inside, mark the virtualized one `data-virtual`.
  * Column widths must be content-independent or columns shift as the window changes.
  */
@@ -17,8 +18,28 @@
 const FOR_RE = /^\s*\(?\s*([A-Za-z_$][\w$]*)\s*(?:,\s*([A-Za-z_$][\w$]*)\s*)?\)?\s+(?:in|of)\s+(.+?)\s*$/;
 
 // Recycle: a row holding one of these open is not handed on (unbound DOM state)
-const OPEN_SEL = 'details[open],dialog[open],:popover-open';
-const OPEN_SEL_BASIC = 'details[open],dialog[open]';
+const OPEN_SEL = 'details[open],dialog[open],[aria-expanded="true"],:popover-open';
+const OPEN_SEL_BASIC = 'details[open],dialog[open],[aria-expanded="true"]';
+const RECYCLE_EVENT = 'manifest:virtual-recycle';
+
+function holdsOpen(n) {
+    try { return n.matches(OPEN_SEL) || !!n.querySelector(OPEN_SEL); }
+    catch { return n.matches(OPEN_SEL_BASIC) || !!n.querySelector(OPEN_SEL_BASIC); }
+}
+
+function hasAttr(node, test) {
+    for (const a of node.attributes) if (test(a.name)) return true;
+    return false;
+}
+
+// Any element in a template's content, nested templates included, passing test
+function templateHas(content, test) {
+    for (const node of content.querySelectorAll('*')) {
+        if (test(node)) return true;
+        if (node.tagName === 'TEMPLATE' && templateHas(node.content, test)) return true;
+    }
+    return false;
+}
 
 function hasVirtual(el) {
     if (el.hasAttribute('x-virtual')) return true;
@@ -72,8 +93,10 @@ function initializeVirtualPlugin() {
     // Runs fn in a throwaway effect: row inits reading the item must not subscribe the source effect to it
     function untracked(fn) {
         if (typeof Alpine.effect !== 'function' || typeof Alpine.release !== 'function') return fn();
-        let out;
-        Alpine.release(Alpine.effect(() => { out = fn(); }));
+        let out, err, failed = false;
+        // A throw is caught inside, so the effect always exists to release (an engine may keep a failed one live)
+        Alpine.release(Alpine.effect(() => { try { out = fn(); } catch (e) { err = e; failed = true; } }));
+        if (failed) throw err;
         return out;
     }
     function trackList(list) {
@@ -117,7 +140,20 @@ function initializeVirtualPlugin() {
         const estimateH = (est && typeof est === 'object') ? (Number(est.height) || 50) : (Number(est) > 0 ? Number(est) : 50);
         const estimateW = (est && typeof est === 'object') ? (Number(est.width) || 120) : 120;
         const overscan = Number.isFinite(options.overscan) && options.overscan >= 0 ? Number(options.overscan) : 3;
-        const recycle = options.recycle === true && options.mode !== 'masonry';   // line modes only
+        let recycle = options.recycle === true && options.mode !== 'masonry';   // line modes only
+        let rowTeleports = false;
+        if (recycle) {
+            const rows = template.content;
+            if (templateHas(rows, (n) => hasAttr(n, (a) => a.startsWith('x-transition')))) {
+                recycle = false;
+                console.warn('[x-virtual] recycle is off for this list: its rows use x-transition, which would replay between unrelated items', el);
+            } else {
+                rowTeleports = templateHas(rows, (n) => n.tagName === 'TEMPLATE' && n.hasAttribute('x-teleport'));
+                if (templateHas(rows, (n) => hasAttr(n, (a) => a === 'x-init')) && !templateHas(rows, (n) => hasAttr(n, (a) => a.startsWith('@' + RECYCLE_EVENT) || a.startsWith('x-on:' + RECYCLE_EVENT)))) {
+                    console.warn(`[x-virtual] recycle: x-init runs once per row node, not per item. Reset row state with @${RECYCLE_EVENT}`, el);
+                }
+            }
+        }
 
         // --- Elements & mode ---
         const scrollEl = el;                          // the bounded scroll viewport
@@ -438,6 +474,7 @@ function initializeVirtualPlugin() {
             };
             let cursor = nextRow(topSpacer.nextSibling);
             let placed = topSpacer;                    // recycle: the last row placed
+            const recycled = free ? [] : null;         // rows rebound this pass, told once all are placed
             try {
                 for (let i = 0; i < keys.length; i++) {
                     if (cursor.parentNode !== host) cursor = botSpacer;
@@ -454,6 +491,7 @@ function initializeVirtualPlugin() {
                         const [oldKey, e] = free.get(node);
                         entry = e;
                         reuseRow(entry, oldKey, keys[i], items[i], indices[i]);
+                        recycled.push(entry, keys[i]);
                         free.delete(node);
                         rowNodes.add(node);
                         if (!inPlace) host.insertBefore(node, cursor);
@@ -477,20 +515,35 @@ function initializeVirtualPlugin() {
                 // Leaving rows nobody took are destroyed as without recycle
                 if (free) for (const [key, e] of free.values()) removeRow(key, e);
             }
+            if (recycled && recycled.length) untracked(() => notifyRecycled(recycled));
 
             // Measure anything not yet measured, then reconcile offsets once.
             scheduleMeasure(keys);
         }
 
-        // Recycle: a leaving row is handed on unless it holds focus or an open popover/details/dialog,
+        // Recycle: a leaving row is handed on unless it (or content it teleported) holds focus or something open,
         // or it cannot move as one node (a <template> root renders its rows beside it)
         function reusable(entry) {
             const n = entry.node;
             if (n.tagName === 'TEMPLATE' || n.parentNode !== host) return false;
             const a = document.activeElement;
             if (a && a !== document.body && n.contains(a)) return false;
-            try { return !(n.matches(OPEN_SEL) || n.querySelector(OPEN_SEL)); }
-            catch { return !(n.matches(OPEN_SEL_BASIC) || n.querySelector(OPEN_SEL_BASIC)); }
+            if (rowTeleports) {
+                for (const t of n.querySelectorAll('template[x-teleport]')) {
+                    const c = t._x_teleport;
+                    if (c && (c.contains(a) || holdsOpen(c))) return false;
+                }
+            }
+            return !holdsOpen(n);
+        }
+
+        // Rows rebound this pass get `manifest:virtual-recycle` (detail: key, index), their scope already on the new item
+        function notifyRecycled(list) {
+            for (let j = 0; j < list.length; j += 2) {
+                const entry = list[j], key = list[j + 1];
+                if (rendered.get(key) !== entry) continue;
+                entry.node.dispatchEvent(new CustomEvent(RECYCLE_EVENT, { detail: { key, index: entry.i } }));
+            }
         }
 
         // Recycle: re-key a leaving row for an entering item; it is measured afresh under the new key

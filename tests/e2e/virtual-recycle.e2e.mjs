@@ -10,7 +10,9 @@
  * 5. x-defer: a popover opened (rendered) for one item shows the new item after reuse, a stashed one too;
  * 6. teardown: emptied list, destroyed container and a switch to the non-recycle container leave no
  *    observed row nodes, and every row node is collectable;
- * 7. the default (no recycle) creates nodes as before; the source effect never re-runs on a scroll.
+ * 7. the default (no recycle) creates nodes as before; the source effect never re-runs on a scroll;
+ * 8. x-dropdown per-row menu ids, open menus elsewhere, teleported content, the manifest:virtual-recycle
+ *    event, x-transition / x-init warnings, and a throwing mount.
  *
  * Run: node tests/e2e/virtual-recycle.e2e.mjs   (VIRTUAL_SRC=<dir with scripts/> to A/B)
  */
@@ -111,6 +113,36 @@ const varied = (recycle, n) => shell(`<script>window.H = (k) => 20 + ((k * 26544
     <template x-for="row in items" :key="row.id"><div class="r" :data-n="row.name" :style="'height:' + row.h + 'px'" x-text="row.name"></div></template>
   </div></div>`)
 
+// Review follow-ups. A list of plain rows with extra row markup; `scripts` adds modules before the virtual one
+const plainItem = `(_, k) => ({ id: k, slot: k, name: 'n' + k, ex: k % 2 === 0 })`
+const extraList = (recycle, rowInner, { rowAttrs = '', scripts = '', after = '', key = 'row.id' } = {}) => `<!doctype html><html><head><meta charset="utf-8">
+<style>body{margin:0;font:14px/20px sans-serif} .r{box-sizing:border-box;height:30px;overflow:hidden;display:flex;gap:4px}</style>
+${HELPERS}${scripts}<script src="/scripts/manifest.virtual.js"></script><script defer src="/__alpine.js"></script></head><body>
+<div id="app" x-data="{ tick: 0, items: Array.from({ length: 2000 }, ${plainItem}) }">
+  <div id="v" x-virtual="${opts(recycle)}" style="height:300px;width:400px;overflow:auto">
+    <template x-for="(row, i) in items" :key="${key}"><div class="r" :data-n="row.name" :data-i="i" ${rowAttrs}><span class="name" x-text="row.name"></span>${rowInner}</div></template>
+  </div>${after}
+</div></body></html>`
+const DROPDOWNS = '<script src="/scripts/manifest.dropdowns.js"></script>'
+const EXTRA_PAGES = {
+    // Per-row menu id read from the item; a shared menu outside the list
+    dropdown: (r) => extraList(r, '<button class="dd" x-dropdown="`m-${row.slot}`">menu</button><menu popover :id="\'m-\' + row.slot"><li class="mi" x-text="\'menu \' + row.name"></li></menu><button class="sh" x-dropdown="shared">shared</button>',
+        { scripts: DROPDOWNS, after: '<menu popover id="shared"><li>shared</li></menu>' }),
+    teleport: (r) => extraList(r, '<template x-teleport="body"><div class="tw"><input class="ti" :value="row.name"><div popover class="tp" :data-for="row.name"><span x-text="\'tele \' + row.name"></span></div></div></template>'),
+    hook: (r) => extraList(r, '<b class="st" x-text="open ? \'open\' : \'closed\'"></b>',
+        { rowAttrs: 'x-data="{ open: false, got: null, seen: null }" x-init="$el.dataset.born = row.name" @manifest:virtual-recycle="open = false; got = $event.detail.key + \':\' + $event.detail.index; seen = row.name" :data-got="got" :data-seen="seen"' }),
+    transition: (r) => extraList(r, '<em x-show="row.ex" x-transition>ex</em>'),
+    init: (r) => extraList(r, '<em x-init="$el.dataset.born = row.name">i</em>'),
+    // An engine that keeps a failed effect live (as older reactivity did), and one row init that throws
+    throwing: (r) => extraList(r, '', { scripts: `<script>document.addEventListener('alpine:init', () => {
+      const eff = Alpine.effect
+      const wrapped = (cb) => { let err = null; const run = eff(() => { try { cb() } catch (e) { err = e } }); if (err) throw err; return run }
+      Object.defineProperty(Alpine, 'effect', { configurable: true, get: () => wrapped })
+      const init = Alpine.initTree
+      Alpine.initTree = function (node) { if (window.__throwNext && node.classList && node.classList.contains('r')) { void Alpine.$data(document.getElementById('app')).tick; window.__throwNext = false; throw new Error('row init failed') } return init.apply(this, arguments) }
+    })</script>` }),
+}
+
 // Two containers behind x-if: recycle on, recycle off; 'off' shows neither
 const teardown = () => shell(`<div id="app" x-data="{ mode: 'recycle', items: Array.from({ length: 2000 }, ${item}) }">
   <template x-if="mode === 'recycle'">${boxFor('block', opts(true), `<template x-for="(row, i) in items" :key="row.id">${rowFor('block')}</template>`)}</template>
@@ -130,6 +162,7 @@ function serve() {
                 '/list': () => list(q('layout', 'block'), r, Number(q('n', 2000)), q('defer') === '1'),
                 '/varied': () => varied(r, Number(q('n', 3000))),
                 '/teardown': () => teardown(),
+                '/extra': () => EXTRA_PAGES[q('page')](r),
             }[u.pathname]
             res.writeHead(html ? 200 : 404, { 'content-type': 'text/html' })
             res.end(html ? html() : 'not found')
@@ -390,6 +423,137 @@ async function main() {
             check(res.reused && res.after !== res.before && res.nodePop === 'pop ' + res.after && res.stale.length === 0, 'x-defer: a rendered popover in a reused row shows the new item', res)
             check(res.lazyStashed && res.laterText[1] === 'lazy ' + res.laterText[0] && res.detText === 'det ' + res.after && res.errs.length === 0, 'x-defer: a stashed popover/details in a reused row renders the new item when opened', res)
             await done(p, 'x-defer')
+        }
+
+        // 8. Review follow-ups
+        const openExtra = async (page, r) => {
+            const p = await browser.newPage()
+            p.errors = []; p.warns = []
+            p.on('pageerror', (e) => p.errors.push(e.message))
+            p.on('console', (m) => { if ((m.type() === 'warn' || m.type() === 'warning') && m.text().includes('[x-virtual]')) p.warns.push(m.text()) })
+            await p.goto(`${base}/extra?page=${page}&r=${r}`, { waitUntil: 'load' })
+            await p.waitForFunction(() => window.Alpine && document.querySelector('#v .r') && window.T, { timeout: 10000 })
+            await p.evaluate(() => T.stable())
+            await new Promise((res) => setTimeout(res, 60))   // x-dropdown sets up in a timeout
+            return p
+        }
+        // x-dropdown with a per-row menu id follows the row's item (recycle on), and a changed id on a kept row (off)
+        for (const r of [1, 0]) {
+            const p = await openExtra('dropdown', r)
+            const res = await p.evaluate(async (r) => {
+                const wiring = () => T.rows().map((row) => { const dd = row.querySelector('.dd'), m = row.querySelector('menu'); return [dd.getAttribute('popovertarget'), dd.getAttribute('aria-controls'), m.id, 'm-' + T.data().items[+row.dataset.i].slot] }).filter((w) => !(w[0] === w[2] && w[1] === w[2] && w[2] === w[3]))
+                const out = {}
+                if (r) { await T.go(20000); await new Promise((res) => setTimeout(res, 60)); out.afterJump = wiring() }
+                // A kept row whose id expression changes value
+                const row = T.rows()[4], it = T.data().items[+row.dataset.i]
+                it.slot = 'x' + it.id
+                await frames_(2); await new Promise((res) => setTimeout(res, 60))
+                out.afterChange = wiring()
+                out.row = row.dataset.n
+                return out
+            }, r)
+            // Real clicks: the trigger of a reused/changed row opens its own menu, once
+            const click = async (n) => {
+                await p.click(`#v .r[data-n="${n}"] .dd`)
+                await new Promise((res) => setTimeout(res, 50))
+                const open = await p.evaluate(() => [...document.querySelectorAll('menu:popover-open')].map((m) => m.querySelector('.mi')?.textContent || m.id))
+                await p.keyboard.press('Escape'); await new Promise((res) => setTimeout(res, 30))
+                return open
+            }
+            const visible = await p.evaluate(() => T.rows().slice(4, 7).map((r) => r.dataset.n))
+            const opened = []
+            for (const n of visible) opened.push([n, await click(n)])
+            if (r) check(res.afterJump.length === 0, 'x-dropdown, recycle on: every reused row\'s trigger targets its own menu', res.afterJump.slice(0, 3))
+            check(res.afterChange.length === 0, `x-dropdown, recycle ${r ? 'on' : 'off'}: a trigger follows its id expression when the value changes on a kept row`, res.afterChange.slice(0, 3))
+            check(opened.every(([n, o]) => o.length === 1 && o[0] === 'menu ' + n), `x-dropdown, recycle ${r ? 'on' : 'off'}: clicking a trigger opens exactly its own row's menu`, opened)
+            await done(p, `x-dropdown, recycle ${r ? 'on' : 'off'}`)
+        }
+        // A row whose trigger has a menu open elsewhere (aria-expanded) is not reused
+        {
+            const p = await openExtra('dropdown', 1)
+            const n = await p.evaluate(() => T.rows()[5].dataset.n)
+            await p.click(`#v .r[data-n="${n}"] .sh`)
+            await new Promise((res) => setTimeout(res, 50))
+            const res = await p.evaluate(async () => {
+                const row = T.rows()[5], plain = T.rows()[6], expanded = row.querySelector('.sh').getAttribute('aria-expanded')
+                await T.go(20000)
+                return { expanded, busy: row.isConnected, plain: plain.isConnected }
+            })
+            check(res.expanded === 'true' && !res.busy && res.plain, 'x-dropdown, recycle on: a row whose trigger has its menu open (aria-expanded) is destroyed, not reused', res)
+            await done(p, 'x-dropdown open shared menu')
+        }
+
+        // Teleported content open or focused keeps its row from reuse
+        for (const arm of ['popover', 'focus']) {
+            const p = await openExtra('teleport', 1)
+            const res = await p.evaluate(async (arm) => {
+                await T.go(3000)
+                const row = T.rows()[5], clone = row.querySelector('template[x-teleport]')._x_teleport
+                if (arm === 'popover') clone.querySelector('.tp').showPopover()
+                else clone.querySelector('.ti').focus()
+                const was = row.dataset.n
+                await frames_(2)
+                await T.go(30000)
+                const open = [...document.querySelectorAll('.tp:popover-open')].map((t) => [t.dataset.for, t.textContent])
+                return { was, rowConnected: row.isConnected, cloneConnected: clone.isConnected, cloneFor: clone.querySelector('.tp').dataset.for, open, focusedTeleport: !!document.activeElement.closest('.tw') }
+            }, arm)
+            check(!res.rowConnected && !res.cloneConnected && res.open.length === 0 && !res.focusedTeleport, `x-teleport, recycle on: a row whose teleported content holds ${arm === 'popover' ? 'an open popover' : 'focus'} is destroyed, not reused`, res)
+            await done(p, `x-teleport ${arm}`)
+        }
+
+        // manifest:virtual-recycle: fires on reused rows only, with the new item bound; row-local state resets through it
+        for (const r of [1, 0]) {
+            const p = await openExtra('hook', r)
+            const res = await p.evaluate(async () => {
+                const old = new WeakSet(T.rows())
+                for (const row of T.rows()) Alpine.$data(row).open = true
+                await frames_(2)
+                await T.go(20000)
+                const rows = T.rows()
+                const reused = rows.filter((row) => old.has(row)), fresh = rows.filter((row) => !old.has(row))
+                const bad = []
+                for (const row of reused) {
+                    const want = T.data().items[+row.dataset.i].id + ':' + row.dataset.i
+                    if (row.dataset.got !== want || row.dataset.seen !== row.dataset.n || row.querySelector('.st').textContent !== 'closed') bad.push([row.dataset.n, row.dataset.got, row.dataset.seen, row.querySelector('.st').textContent])
+                }
+                return { reused: reused.length, fresh: fresh.length, bad: bad.slice(0, 3), freshFired: fresh.filter((row) => row.dataset.got !== undefined).length, born: reused[0] && [reused[0].dataset.born, reused[0].dataset.n] }
+            })
+            if (r) {
+                check(res.reused > 5 && res.bad.length === 0, 'recycle hook: @manifest:virtual-recycle resets row-local x-data on reuse; detail is the new key and index; the scope reads the new item', res)
+                check(res.freshFired === 0, 'recycle hook: not fired for freshly mounted rows', res)
+            } else check(res.reused === 0 && res.freshFired === 0, 'recycle hook, recycle off: never fired', res)
+            check(p.warns.length === 0, `recycle hook, recycle ${r ? 'on' : 'off'}: no x-init warning when the template handles the event`, p.warns)
+            await done(p, `recycle hook, recycle ${r ? 'on' : 'off'}`)
+        }
+
+        // x-transition in rows: recycle stays off for the list, with one warning; x-init without the hook warns once
+        {
+            const p = await openExtra('transition', 1)
+            const res = await p.evaluate(async () => { const c0 = window.__created, n0 = T.rows().length; await T.go(20000); return { created: window.__created - c0, rows: T.rows().length, n0 } })
+            check(res.created >= res.n0 && p.warns.length === 1 && /x-transition/.test(p.warns[0]), 'x-transition in rows: recycle is off for the list (rows recreated), one warning naming x-transition', { ...res, warns: p.warns })
+            await done(p, 'x-transition rows')
+            const q = await openExtra('init', 1)
+            check(q.warns.length === 1 && /x-init/.test(q.warns[0]) && /manifest:virtual-recycle/.test(q.warns[0]), 'x-init in rows with recycle: one warning naming x-init and the event', q.warns)
+            await done(q, 'x-init warning')
+            const o = await openExtra('init', 0)
+            check(o.warns.length === 0, 'x-init in rows without recycle: no warning', o.warns)
+            await done(o, 'x-init no recycle')
+        }
+
+        // A row init that throws during a recycle mount leaves no live effect behind to mount it again
+        {
+            const p = await openExtra('throwing', 1)
+            const res = await p.evaluate(async () => {
+                window.__throwNext = true
+                await T.go(20000)
+                const c0 = window.__created, n0 = document.querySelectorAll('#v .r').length
+                T.data().tick++
+                await frames_(4)
+                return { created: window.__created - c0, rows: document.querySelectorAll('#v .r').length, n0 }
+            })
+            check(p.errors.length === 1 && /row init failed/.test(p.errors[0]), 'throwing mount: the init error surfaces once (setup)', p.errors)
+            check(res.created === 0 && res.rows === res.n0, 'throwing mount: a later change does not re-run the failed mount', res)
+            await p.close()
         }
 
         // 6. Teardown: destroyed container, switch to the non-recycle container, both gone; nodes collectable

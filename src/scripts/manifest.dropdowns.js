@@ -265,12 +265,29 @@ function initializeDropdownPlugin() {
             releaseManagedMenu(menu, el);
         });
 
+        // A template-literal id is read inside the effect, so the trigger follows it when its value changes
+        const dynamicId = !!expression && (expression.includes('${') || expression.includes('`'));
+        const evaluateId = dynamicId ? evaluateLater(expression) : null;
+        let resolvedId, hasRun = false;
+
         effect(() => {
+            let nextId;
+            if (evaluateId) evaluateId((value) => { nextId = value; });
+            if (hasRun && nextId === resolvedId) return;
+            const changed = hasRun;
+            hasRun = true;
+            resolvedId = nextId;
             if (runAbort) runAbort.abort();
             if (menu) {
+                if (changed) {
+                    releaseContextTrigger(menu, el);
+                    if (menu.__mnfstTrigger === el) menu.__mnfstTrigger = null;
+                }
                 releaseMenuKeys(menu, el);
                 releaseManagedMenu(menu, el);
             }
+            // The old target goes now, or an id that resolves to nothing would leave it pointing there
+            if (changed) { el.removeAttribute('popovertarget'); el.removeAttribute('aria-controls'); }
             const runCtl = new AbortController();
             runAbort = runCtl;
             const signal = runCtl.signal;
@@ -289,17 +306,8 @@ function initializeDropdownPlugin() {
                 // Evaluate the expression to get the actual menu ID
                 let dropdownId;
                 if (expression) {
-                    // Check if expression contains template literals or is a static string
-                    if (expression.includes('${') || expression.includes('`')) {
-                        // Use evaluateLater for dynamic expressions
-                        const evaluator = evaluateLater(expression);
-                        evaluator(value => {
-                            dropdownId = value;
-                        });
-                    } else {
-                        // Static string - use as-is
-                        dropdownId = expression;
-                    }
+                    // Template literal: the value read in the effect; otherwise a static id
+                    dropdownId = dynamicId ? resolvedId : expression;
                 } else {
                     dropdownId = `dropdown-${anchorCode}`;
                 }
