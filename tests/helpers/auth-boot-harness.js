@@ -60,7 +60,7 @@ export function fakeAppwrite(responder) {
         return promise
     }
     const appwrite = {
-        account: Object.fromEntries(['get', 'listSessions', 'deleteSession', 'createAnonymousSession', 'listIdentities'].map(n => [n, call(`account.${n}`)])),
+        account: Object.fromEntries(['get', 'listSessions', 'deleteSession', 'createAnonymousSession', 'listIdentities', 'createSession', 'getSession'].map(n => [n, call(`account.${n}`)])),
         teams: Object.fromEntries(['list', 'listMemberships', 'getPrefs', 'updatePrefs', 'get', 'create', 'delete', 'updateMembership'].map(n => [n, call(`teams.${n}`)])),
         realtime: null,
     }
@@ -81,7 +81,9 @@ function storage(initial = {}) {
 }
 
 // Boots a page: returns { store, events, fake, window }
-export function boot({ cfg, responder, persisted = null, search = '', realtime = false }) {
+// alpineInitAfter: page still loading, Alpine loads after this script; DOMContentLoaded fires first and
+// alpine:init that many ms later (the early entry into auth main)
+export function boot({ cfg, responder, persisted = null, search = '', realtime = false, alpineInitAfter = null }) {
     const fake = fakeAppwrite(responder)
     if (realtime) fake.enableRealtime()
     const target = new EventTarget()
@@ -101,21 +103,23 @@ export function boot({ cfg, responder, persisted = null, search = '', realtime =
         removeEventListener: target.removeEventListener.bind(target),
         dispatchEvent: target.dispatchEvent.bind(target),
         document: {
-            readyState: 'complete', visibilityState: 'visible',
+            readyState: alpineInitAfter == null ? 'complete' : 'loading', visibilityState: 'visible',
             addEventListener: docTarget.addEventListener.bind(docTarget),
             removeEventListener: docTarget.removeEventListener.bind(docTarget),
             dispatchEvent: docTarget.dispatchEvent.bind(docTarget),
             querySelector: () => null,
         },
-        Alpine: {
-            store(name, val) {
-                if (val === undefined) return stores[name]
-                stores[name] = val
-                // Alpine 3 runs a store's own init() on registration
-                if (val && Object.prototype.hasOwnProperty.call(val, 'init') && typeof val.init === 'function') val.init()
-            },
+    }
+    const alpine = {
+        magic() {},
+        store(name, val) {
+            if (val === undefined) return stores[name]
+            stores[name] = val
+            // Alpine 3 runs a store's own init() on registration
+            if (val && Object.prototype.hasOwnProperty.call(val, 'init') && typeof val.init === 'function') val.init()
         },
     }
+    if (alpineInitAfter == null) ctx.Alpine = alpine
     ctx.window = ctx
     ctx.ManifestAppwriteAuthConfig = { getAppwriteConfig: async () => cfg, getAppwriteClient: async () => fake.appwrite, ensureManifest: async () => ({}) }
     for (const type of ['initialized', 'teams-loaded', 'login', 'logout', 'anonymous', 'session-cleared']) {
@@ -123,8 +127,15 @@ export function boot({ cfg, responder, persisted = null, search = '', realtime =
     }
     vm.createContext(ctx)
     vm.runInContext(BUNDLE, ctx)
-    docTarget.dispatchEvent(new Event('alpine:init'))
-    return { store: stores.auth, events, fake, window: ctx }
+    if (alpineInitAfter == null) {
+        docTarget.dispatchEvent(new Event('alpine:init'))
+    } else {
+        ctx.Alpine = alpine
+        ctx.document.readyState = 'interactive'
+        docTarget.dispatchEvent(new Event('DOMContentLoaded'))
+        setTimeout(() => docTarget.dispatchEvent(new Event('alpine:init')), alpineInitAfter)
+    }
+    return { store: stores.auth, getStore: () => stores.auth, events, fake, window: ctx }
 }
 
 export function snapshot(s) {

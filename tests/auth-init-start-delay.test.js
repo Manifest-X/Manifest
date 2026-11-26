@@ -53,3 +53,66 @@ describe('post-init work when init beats the start delay', () => {
         expect(fake.names().filter(n => n === 'account.createAnonymousSession')).toHaveLength(1)
     })
 })
+
+describe('early entry: DOMContentLoaded before alpine:init', () => {
+    // Auth main is entered from DOMContentLoaded; alpine:init (store + init) lands 140 ms later, so main's
+    // store poll finds a finished init before the other modules' 100 ms attach timers have run
+    const unhandled = []
+    const onUnhandled = e => unhandled.push(e)
+
+    it('guest-auto waits for the anonymous module and creates the guest', async () => {
+        let first = true
+        const page = boot({
+            alpineInitAfter: 140,
+            cfg: { teams: false, guestAuto: true },
+            responder: (name) => {
+                if (name === 'account.get' && first) { first = false; return noSession() }
+                if (name === 'account.createAnonymousSession') return { $id: 'g1', provider: 'anonymous' }
+                if (name === 'account.get') return { $id: 'guest' }
+            },
+        })
+        await until(() => page.getStore()?.isAnonymous, 2000)
+        expect(page.fake.names()).toEqual(['account.get', 'account.createAnonymousSession', 'account.get'])
+    })
+
+    it('a magic-link callback waits for the magic module instead of calling an undefined method', async () => {
+        process.on('unhandledRejection', onUnhandled)
+        try {
+            let signedIn = false
+            const page = boot({
+                alpineInitAfter: 140,
+                cfg: { teams: false },
+                search: '?userId=uA&secret=s3',
+                responder: (name) => {
+                    if (name === 'account.get') return signedIn ? { $id: 'uA' } : noSession()
+                    if (name === 'account.createSession') { signedIn = true; return { $id: 's1', provider: 'magic-url' } }
+                    if (name === 'account.getSession') return { $id: 's1', provider: 'magic-url' }
+                    if (name === 'account.listSessions') return { sessions: [{ $id: 's1', current: true, provider: 'magic-url' }] }
+                },
+            })
+            await until(() => page.fake.names().includes('account.createSession'), 2000)
+            expect(page.fake.calls.find(c => c.name === 'account.createSession').args).toEqual(['uA', 's3'])
+            await sleep(50)
+            expect(unhandled).toEqual([])
+        } finally {
+            process.off('unhandledRejection', onUnhandled)
+        }
+    })
+
+    it('the normal path is not delayed: post-init work runs as soon as init is announced', async () => {
+        let first = true
+        let created = 0
+        const page = boot({
+            cfg: { teams: false, guestAuto: true },
+            responder: (name, arg, entry) => {
+                if (name === 'account.get' && first) { first = false; setTimeout(() => entry.reject(noSession()), 250); return undefined }
+                if (name === 'account.createAnonymousSession') { created = Date.now(); return { $id: 'g1', provider: 'anonymous' } }
+                if (name === 'account.get') return { $id: 'guest' }
+            },
+        })
+        await until(() => page.events.some(e => e.type === 'initialized'))
+        const announced = Date.now()
+        await until(() => created > 0, 2000)
+        expect(created - announced).toBeLessThan(30)
+    })
+})
