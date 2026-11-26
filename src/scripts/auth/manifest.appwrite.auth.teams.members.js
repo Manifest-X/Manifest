@@ -127,7 +127,7 @@ function initializeTeamsMembers() {
                     const ownQueries = !!(queries && queries.length);
                     // A listing with no queries of its own uses auth.teams.memberLimit when set
                     if (!queries || queries.length === 0) {
-                        const memberQueries = this._memberQueries ? this._memberQueries(await config.getAppwriteConfig()) : [];
+                        const memberQueries = this._memberQueries ? this._memberQueries(this._appwriteConfig || await config.getAppwriteConfig()) : [];
                         if (memberQueries.length) queries = memberQueries;
                     }
                     const params = {

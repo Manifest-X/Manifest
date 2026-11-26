@@ -139,3 +139,23 @@ describe('optimistic member removal', () => {
         expect(p.store.currentTeamMembershipsTotal).toBe(4)
     })
 })
+
+describe('memberLimit absent: request order unchanged', () => {
+    it('a realtime membership event issues its member listing before the team re-list, as in 0.5.340', async () => {
+        const p = boot({
+            cfg: { teams: true }, persisted, realtime: true,
+            responder: (name, arg) => ({
+                'account.get': user,
+                'account.listSessions': { sessions: [{ $id: 's1', current: true, provider: 'email' }] },
+                'teams.list': { teams: [{ $id: 't1', name: 'One' }], total: 1 },
+                'teams.listMemberships': { memberships: manyMembers('t1', 3), total: 3 },
+                'teams.getPrefs': {},
+            })[name],
+        })
+        await until(() => p.events.some(e => e.type === 'teams-loaded') && !!p.fake.channels.memberships)
+        const before = p.fake.calls.length
+        p.fake.emit('memberships', { events: ['teams.t1.memberships.x.update'], payload: { teamId: 't1' } })
+        await sleep(80)
+        expect(p.fake.names().slice(before)).toEqual(['teams.listMemberships', 'teams.list', 'teams.listMemberships'])
+    })
+})

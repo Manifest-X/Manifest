@@ -788,6 +788,7 @@ function initializeAuthStore() {
         _initializing: false,
         _initAnnounced: false, // manifest:auth:initialized has fired
         _appwrite: null,
+        _appwriteConfig: null,
         _guestAuto: false,
         _guestManual: false,
         _signInPendingUntil: 0, // signed-out init with guest-auto or an auth callback still to sign in
@@ -1000,6 +1001,7 @@ function initializeAuthStore() {
 
                 // Get auth methods config from manifest
                 appwriteConfig = await config.getAppwriteConfig();
+                this._appwriteConfig = appwriteConfig; // read synchronously where an await would reorder requests
                 this._guestAuto = appwriteConfig?.guestAuto === true;
                 this._guestManual = appwriteConfig?.guestManual === true;
                 this.guestManualEnabled = appwriteConfig?.guestManual === true;
@@ -5010,7 +5012,7 @@ function initializeTeamsMembers() {
                     const ownQueries = !!(queries && queries.length);
                     // A listing with no queries of its own uses auth.teams.memberLimit when set
                     if (!queries || queries.length === 0) {
-                        const memberQueries = this._memberQueries ? this._memberQueries(await config.getAppwriteConfig()) : [];
+                        const memberQueries = this._memberQueries ? this._memberQueries(this._appwriteConfig || await config.getAppwriteConfig()) : [];
                         if (memberQueries.length) queries = memberQueries;
                     }
                     const params = {
