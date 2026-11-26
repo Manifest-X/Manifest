@@ -4,7 +4,8 @@
  * FLOW between top/bottom spacers standing in for off-window rows, so the same markup
  * works virtualized or not and shared columns/sticky/flex-wrap behave normally;
  * masonry positions absolutely. Options: estimate (px or {width,height}), overscan,
- * mode ('rows'|'gallery'|'masonry'; masonry must be explicit, others auto-detect).
+ * mode ('rows'|'gallery'|'masonry'; masonry must be explicit, others auto-detect),
+ * recycle (true: rows leaving the window are rebound to rows entering it; line modes only).
  * With several x-for templates inside, mark the virtualized one `data-virtual`.
  * Column widths must be content-independent or columns shift as the window changes.
  */
@@ -14,6 +15,10 @@
 
 // `item in src` or `(item, index) in src`, parentheses optional (as x-for)
 const FOR_RE = /^\s*\(?\s*([A-Za-z_$][\w$]*)\s*(?:,\s*([A-Za-z_$][\w$]*)\s*)?\)?\s+(?:in|of)\s+(.+?)\s*$/;
+
+// Recycle: a row holding one of these open is not handed on (unbound DOM state)
+const OPEN_SEL = 'details[open],dialog[open],:popover-open';
+const OPEN_SEL_BASIC = 'details[open],dialog[open]';
 
 function hasVirtual(el) {
     if (el.hasAttribute('x-virtual')) return true;
@@ -63,6 +68,14 @@ function initializeVirtualPlugin() {
     // One dependency for "any index or length change" where array iteration is instrumented; else a read per index
     const cheapIterate = Alpine.reactive([]).some !== Array.prototype.some;
     const anyItem = () => true;
+    const toRaw = Alpine.raw || ((x) => x);
+    // Runs fn in a throwaway effect: row inits reading the item must not subscribe the source effect to it
+    function untracked(fn) {
+        if (typeof Alpine.effect !== 'function' || typeof Alpine.release !== 'function') return fn();
+        let out;
+        Alpine.release(Alpine.effect(() => { out = fn(); }));
+        return out;
+    }
     function trackList(list) {
         if (!Array.isArray(list)) return;   // an iterator would be consumed
         void list.length;
@@ -104,6 +117,7 @@ function initializeVirtualPlugin() {
         const estimateH = (est && typeof est === 'object') ? (Number(est.height) || 50) : (Number(est) > 0 ? Number(est) : 50);
         const estimateW = (est && typeof est === 'object') ? (Number(est.width) || 120) : 120;
         const overscan = Number.isFinite(options.overscan) && options.overscan >= 0 ? Number(options.overscan) : 3;
+        const recycle = options.recycle === true && options.mode !== 'masonry';   // line modes only
 
         // --- Elements & mode ---
         const scrollEl = el;                          // the bounded scroll viewport
@@ -406,8 +420,12 @@ function initializeVirtualPlugin() {
                 items.push(item);
                 indices.push(i);
             }
+            const free = recycle ? new Map() : null;   // leaving row node -> [old key, entry], for rows entering this pass
             for (const [key, entry] of rendered) {
-                if (!visible.has(key)) removeRow(key, entry);
+                if (!visible.has(key)) {
+                    if (free && reusable(entry)) { free.set(entry.node, [key, entry]); rendered.delete(key); }
+                    else removeRow(key, entry);
+                }
             }
 
             // Keep DOM order = data order, moving only rows out of place
@@ -419,22 +437,84 @@ function initializeVirtualPlugin() {
                 return n && n.parentNode === host ? n : botSpacer;
             };
             let cursor = nextRow(topSpacer.nextSibling);
-            for (let i = 0; i < keys.length; i++) {
-                if (cursor.parentNode !== host) cursor = botSpacer;
-                let entry = rendered.get(keys[i]);
-                if (!entry) {
-                    entry = mountRow(items[i], keys[i], cursor, indices[i]);
-                    rowNodes.add(entry.node);
-                    if (entry.node.parentNode !== host) host.insertBefore(entry.node, cursor);  // root replaced itself in init
-                    continue;
+            let placed = topSpacer;                    // recycle: the last row placed
+            try {
+                for (let i = 0; i < keys.length; i++) {
+                    if (cursor.parentNode !== host) cursor = botSpacer;
+                    let entry = rendered.get(keys[i]);
+                    if (!entry && free && free.size) {
+                        // A free row already between the last placed row and the cursor stays put
+                        let node = null;
+                        for (let n = placed.parentNode === host ? placed.nextSibling : null; n && n !== cursor; n = n.nextSibling) {
+                            if (free.has(n)) { node = n; break; }
+                            if (rowNodes.has(n)) break;
+                        }
+                        const inPlace = !!node;
+                        if (!node) node = free.keys().next().value;
+                        const [oldKey, e] = free.get(node);
+                        entry = e;
+                        reuseRow(entry, oldKey, keys[i], items[i], indices[i]);
+                        free.delete(node);
+                        rowNodes.add(node);
+                        if (!inPlace) host.insertBefore(node, cursor);
+                        placed = node;
+                        continue;
+                    }
+                    if (!entry) {
+                        entry = free ? untracked(() => mountRow(items[i], keys[i], cursor, indices[i])) : mountRow(items[i], keys[i], cursor, indices[i]);
+                        rowNodes.add(entry.node);
+                        if (entry.node.parentNode !== host) host.insertBefore(entry.node, cursor);  // root replaced itself in init
+                        if (free) placed = entry.node;
+                        continue;
+                    }
+                    if (free) rebindQuiet(entry, items[i], indices[i]);
+                    else rebind(entry, items[i], indices[i]);
+                    if (entry.node === cursor) cursor = nextRow(cursor.nextSibling);
+                    else host.insertBefore(entry.node, cursor);
+                    if (free) placed = entry.node;
                 }
-                rebind(entry, items[i], indices[i]);
-                if (entry.node === cursor) cursor = nextRow(cursor.nextSibling);
-                else host.insertBefore(entry.node, cursor);
+            } finally {
+                // Leaving rows nobody took are destroyed as without recycle
+                if (free) for (const [key, e] of free.values()) removeRow(key, e);
             }
 
             // Measure anything not yet measured, then reconcile offsets once.
             scheduleMeasure(keys);
+        }
+
+        // Recycle: a leaving row is handed on unless it holds focus or an open popover/details/dialog,
+        // or it cannot move as one node (a <template> root renders its rows beside it)
+        function reusable(entry) {
+            const n = entry.node;
+            if (n.tagName === 'TEMPLATE' || n.parentNode !== host) return false;
+            const a = document.activeElement;
+            if (a && a !== document.body && n.contains(a)) return false;
+            try { return !(n.matches(OPEN_SEL) || n.querySelector(OPEN_SEL)); }
+            catch { return !(n.matches(OPEN_SEL_BASIC) || n.querySelector(OPEN_SEL_BASIC)); }
+        }
+
+        // Recycle: re-key a leaving row for an entering item; it is measured afresh under the new key
+        function reuseRow(entry, oldKey, key, item, i) {
+            if (entry.targets) {
+                const kept = [];
+                for (const t of entry.targets) {
+                    if (entry.node.contains(t)) { targetKey.set(t, key); kept.push(t); }
+                    else { rowRo.unobserve(t); targetKey.delete(t); }   // cells an x-if dropped
+                }
+                entry.targets = kept;
+            }
+            pending.delete(oldKey);
+            entry.seen = false;
+            rendered.set(key, entry);
+            rebindQuiet(entry, item, i);
+        }
+
+        // Rebind comparing the raw scope: a read through the proxy here would make the source effect depend on it
+        function rebindQuiet(entry, item, i) {
+            entry.i = i;
+            const s = toRaw(entry.scope);
+            if (toRaw(s[itemName]) !== toRaw(item)) entry.scope[itemName] = item;
+            if (indexName && s[indexName] !== i) entry.scope[indexName] = i;
         }
 
         // Masonry: render items whose packed box intersects the viewport, positioned
