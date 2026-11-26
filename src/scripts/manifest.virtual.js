@@ -29,7 +29,7 @@ const SCROLL_TO = { index: 'scrollToIndex', key: 'scrollToKey' };
 const ALIGNS = ['start', 'center', 'end', 'nearest'];
 const SCROLL_KEYS = new Set(['PageUp', 'PageDown', 'Home', 'End', ' ', 'ArrowUp', 'ArrowDown']);
 const WIDGET_SEL = 'input,textarea,select,button,[contenteditable]:not([contenteditable="false"]),[role=slider],[role=spinbutton],[role=listbox],[role=menu],[role=menubar],[role=tablist],[role=tree],[role=treegrid],[role=grid],[role=radiogroup],[role=combobox],[role=scrollbar],[role=textbox],[role=searchbox]';
-const FOLLOW_QUIET = 400, FOLLOW_MAX = 3000;   // ms after landing: keep the target in place while rows still size
+const FOLLOW_QUIET = 400, FOLLOW_MAX = 3000, SETTLE_MAX = 1500;   // ms after landing: keep the target in place while rows still size
 const handles = new WeakMap();   // x-virtual element -> its $virtual API
 
 // A value for a message, whatever it is
@@ -466,7 +466,7 @@ function initializeVirtualPlugin() {
 
         function render() {
             const r = renderWindow();
-            if (seek && seek.parked && r !== false) { seek.parked = false; seek.wrote = scrollEl.scrollTop; arm(seek, true); seek.raf = requestAnimationFrame(seekFrame); }
+            if (seek && seek.parked && r !== false) { seek.parked = false; seek.wrote = scrollEl.scrollTop; seek.wroteMax = scrollEl.scrollHeight - scrollEl.clientHeight; arm(seek, true); seek.raf = requestAnimationFrame(seekFrame); }
             return r;
         }
 
@@ -906,7 +906,7 @@ function initializeVirtualPlugin() {
                         if (node && Math.abs(destFor(seek) - scrollEl.scrollTop) < 1) return resolve(node);
                     }
                     endSeek(null);
-                    seek = { key, i, ver: dataVer, waiters: [resolve], align, offset, smooth, snap, parked: false, armed: false, raf: 0, frames: 0, done: false, wrote: scrollEl.scrollTop, quiet: 0, until: 0, anchor: scrollEl.style.overflowAnchor };
+                    seek = { key, i, ver: dataVer, waiters: [resolve], align, offset, smooth, snap, parked: false, armed: false, raf: 0, frames: 0, done: false, wrote: scrollEl.scrollTop, wroteMax: scrollEl.scrollHeight - scrollEl.clientHeight, quiet: 0, until: 0, anchor: scrollEl.style.overflowAnchor };
                     scrollEl.style.overflowAnchor = 'none';   // the seek keeps the target in place itself
                     arm(seek, true);
                     seekFrame();
@@ -973,7 +973,9 @@ function initializeVirtualPlugin() {
         // A scroll position the seek did not write: the person, the browser (keys, find, snap) or other code
         function movedOutside(s) {
             const st = scrollEl.scrollTop, max = scrollEl.scrollHeight - scrollEl.clientHeight;
-            return Math.abs(st - s.wrote) >= 1 && !(s.wrote >= max - 1 && st >= max - 1);
+            if (Math.abs(st - s.wrote) < 1 || (s.wrote >= max - 1 && st >= max - 1)) return false;
+            // Left at the end: content shrank for a moment (rebound rows) and the browser clamped
+            return !(st < s.wrote && s.wrote >= s.wroteMax - 1);
         }
 
         // Lands (resolves), then follows the target while rows still size, until quiet or capped
@@ -998,7 +1000,8 @@ function initializeVirtualPlugin() {
                 if (busy) render();
                 if (!s.done) {
                     if (!(s.smooth && travel(s))) {
-                        if (++s.frames > 90) return endSeek(targetNode());   // heights still changing: as close as it got
+                        if (!s.t1) s.t1 = now;
+                        if (now - s.t1 > SETTLE_MAX) return endSeek(targetNode());   // heights still changing: as close as it got
                         busy = converge(s) || busy;
                         const node = targetNode();
                         // Not in a frame that just rendered rows: recycled rows bind after this task
@@ -1013,6 +1016,7 @@ function initializeVirtualPlugin() {
                     if (Math.abs(destFor(s) - scrollEl.scrollTop) >= 1) { converge(s); s.quiet = now; }
                 }
                 s.wrote = scrollEl.scrollTop;
+                s.wroteMax = scrollEl.scrollHeight - scrollEl.clientHeight;
                 s.raf = requestAnimationFrame(seekFrame);
             } catch (e) {
                 endSeek(null);
@@ -1030,14 +1034,12 @@ function initializeVirtualPlugin() {
             if (++s.frames > 4) return endSeek(null);
             const type = scrollEl.style.scrollSnapType;
             scrollEl.style.scrollSnapType = 'none';
-            converge(s);
-            scrollEl.style.scrollSnapType = type;
+            try { converge(s); } finally { scrollEl.style.scrollSnapType = type; }
             s.raf = requestAnimationFrame(seekFrame);
         }
 
         function snaps() {
-            const t = getComputedStyle(scrollEl).scrollSnapType;
-            return !!t && t !== 'none';
+            return /^(y|block|both)\b/.test(getComputedStyle(scrollEl).scrollSnapType || '');   // block axis only
         }
 
         // Smooth: eased frames toward the estimate, re-read each frame as rows measure; never steps back
