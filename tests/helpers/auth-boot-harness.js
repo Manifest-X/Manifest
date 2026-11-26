@@ -28,6 +28,7 @@ const FILES = [
     'manifest.appwrite.auth.users.oauth.js',
     'manifest.appwrite.auth.users.callbacks.js',
 ]
+const DATA_APPWRITE = readFileSync(path.join(process.env.DATA_SRC_DIR || path.join(__dirname, '../../src/scripts/data'), 'appwrite/manifest.data.appwrite.js'), 'utf8')
 const BUNDLE = `(function () {\n${FILES.map(f => readFileSync(path.join(SRC_DIR, f), 'utf8')).join('\n\n')}\n})();`
 
 export const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -62,6 +63,8 @@ export function fakeAppwrite(responder) {
     const appwrite = {
         account: Object.fromEntries(['get', 'listSessions', 'deleteSession', 'createAnonymousSession', 'listIdentities', 'createSession', 'getSession'].map(n => [n, call(`account.${n}`)])),
         teams: Object.fromEntries(['list', 'listMemberships', 'getPrefs', 'updatePrefs', 'get', 'create', 'delete', 'updateMembership'].map(n => [n, call(`teams.${n}`)])),
+        tables: { listRows: call('tables.listRows') },
+        client: { id: 'client' },
         realtime: null,
     }
     // Opt-in realtime: subscribe records the handler per channel; emit() drives it
@@ -83,7 +86,9 @@ function storage(initial = {}) {
 // Boots a page: returns { store, events, fake, window }
 // alpineInitAfter: page still loading, Alpine loads after this script; DOMContentLoaded fires first and
 // alpine:init that many ms later (the early entry into auth main)
-export function boot({ cfg, responder, persisted = null, search = '', realtime = false, alpineInitAfter = null }) {
+// data: also load the Appwrite data module (its auth pre-flight shares the fake's account.get)
+export function boot({ cfg, responder, persisted = null, search = '', realtime = false, alpineInitAfter = null, data = false, local = {}, onAlpineInit = null }) {
+    // local: extra localStorage entries; onAlpineInit(store): runs in alpine:init right after the store registers
     const fake = fakeAppwrite(responder)
     if (realtime) fake.enableRealtime()
     const target = new EventTarget()
@@ -95,7 +100,7 @@ export function boot({ cfg, responder, persisted = null, search = '', realtime =
         console: { log() {}, info() {}, debug() {}, warn() {}, error() {} },
         setTimeout, clearTimeout, setInterval, clearInterval, Promise, URL, URLSearchParams, JSON, Date, Map, Set,
         CustomEvent, Event,
-        localStorage: storage(persisted ? { 'manifest:auth:state': JSON.stringify(persisted) } : {}),
+        localStorage: storage({ ...local, ...(persisted ? { 'manifest:auth:state': JSON.stringify(persisted) } : {}) }),
         sessionStorage: storage(),
         location: { href: `https://app.test/${search}`, search, pathname: '/', origin: 'https://app.test', hash: '' },
         history: { replaceState() {} },
@@ -125,9 +130,20 @@ export function boot({ cfg, responder, persisted = null, search = '', realtime =
     for (const type of ['initialized', 'teams-loaded', 'login', 'logout', 'anonymous', 'session-cleared']) {
         target.addEventListener(`manifest:auth:${type}`, () => events.push({ type, store: stores.auth && snapshot(stores.auth) }))
     }
-    ctx.Appwrite = { Query: { limit: n => JSON.stringify({ method: 'limit', values: [n] }), equal: (attr, values) => JSON.stringify({ method: 'equal', attribute: attr, values }) } }
+    ctx.Appwrite = { Query: { limit: n => JSON.stringify({ method: 'limit', values: [n] }), equal: (attr, values) => JSON.stringify({ method: 'equal', attribute: attr, values }), cursorAfter: id => JSON.stringify({ method: 'cursorAfter', values: [id] }) } }
+    if (data) {
+        ctx.Appwrite = {
+            ...ctx.Appwrite,
+            Client: class {},
+            Account: class { get() { return fake.appwrite.account.get() } },
+            TablesDB: class { listRows(a) { return fake.appwrite.tables.listRows(a) } },
+        }
+        ctx.ManifestDataConfig = { ensureManifest: async () => ({ appwrite: { auth: {} } }), interpolateEnvVars: v => v }
+    }
     vm.createContext(ctx)
     vm.runInContext(BUNDLE, ctx)
+    if (data) vm.runInContext(DATA_APPWRITE, ctx)
+    if (onAlpineInit) docTarget.addEventListener('alpine:init', () => onAlpineInit(stores.auth))
     if (alpineInitAfter == null) {
         docTarget.dispatchEvent(new Event('alpine:init'))
     } else {

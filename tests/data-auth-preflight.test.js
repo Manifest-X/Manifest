@@ -17,7 +17,7 @@ const SRC = readFileSync(
     'utf8'
 )
 
-function load({ authPlugin = true, unauthorized = false, listDenied = false } = {}) {
+function load({ authPlugin = true, unauthorized = false, listDenied = false, authStore = undefined } = {}) {
     const state = { accountGets: 0, unauthorized, listDenied }
     const listeners = {}
     const ctx = { console, setTimeout, Promise }
@@ -46,7 +46,9 @@ function load({ authPlugin = true, unauthorized = false, listDenied = false } = 
             interpolateEnvVars: v => v,
         },
     }
-    if (authPlugin) ctx.window.ManifestAppwriteAuthConfig = { getAppwriteClient: async () => ({ client: {} }) }
+    const client = {}
+    if (authPlugin) ctx.window.ManifestAppwriteAuthConfig = { getAppwriteClient: async () => ({ client }) }
+    if (authStore !== undefined) ctx.Alpine = { store: name => (name === 'auth' ? authStore?.(client) : undefined) }
     ctx.document = { addEventListener: () => {} }
     ctx.global = ctx
     vm.createContext(ctx)
@@ -82,6 +84,21 @@ describe('data plugin auth pre-flight dedupe', () => {
         state.unauthorized = false
         await api.loadTableRows('db', 'x')
         expect(state.accountGets).toBe(2)
+    })
+
+    it("an auth store confirmed for another client does not stand in for this one", async () => {
+        const { api, state } = load({ authStore: () => ({ _initAnnounced: true, isAuthenticated: true, _sessionUnverified: false, _appwrite: { client: {} } }) })
+        await api.loadTableRows('db', 'x')
+        expect(state.accountGets).toBe(1)
+    })
+
+    it('an auth store that confirmed this client skips the check; a missing store does not', async () => {
+        const confirmed = load({ authStore: client => ({ _initAnnounced: true, isAuthenticated: true, _sessionUnverified: false, _appwrite: { client } }) })
+        await confirmed.api.loadTableRows('db', 'x')
+        expect(confirmed.state.accountGets).toBe(0)
+        const missing = load({ authStore: () => undefined })
+        await missing.api.loadTableRows('db', 'x')
+        expect(missing.state.accountGets).toBe(1)
     })
 
     it('no auth plugin → no account.get() at all', async () => {

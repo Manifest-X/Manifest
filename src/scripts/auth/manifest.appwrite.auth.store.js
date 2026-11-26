@@ -17,6 +17,17 @@ function initializeAuthStore() {
     const SIGN_IN_PENDING_MS = 5000;
     ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
         window.addEventListener(type, () => { const store = Alpine.store('auth'); if (store) { store._signInPendingUntil = 0; store._authEpoch++; markVerified(store); } }));
+    // An app-chosen starting team belongs to the user it was first used for: dropped on sign-out or a different user
+    ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
+        window.addEventListener(type, () => {
+            const store = Alpine.store('auth');
+            if (!store) return;
+            const signedOut = type === 'manifest:auth:logout' || type === 'manifest:auth:session-cleared';
+            if (signedOut || (store._startTeamUserId && store._startTeamUserId !== store.user?.$id)) {
+                store.startTeamId = null;
+                store._startTeamUserId = null;
+            }
+        }));
 
     // Unverified session: recheck on reconnect, on return to the tab, and on a bounded backoff
     const RECHECK_DELAYS_MS = [2000, 5000, 15000, 60000];
@@ -69,6 +80,20 @@ function initializeAuthStore() {
             const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
             return saved?.isAuthenticated === true && saved.user?.$id ? { userId: saved.user.$id, isAnonymous: saved.isAnonymous === true } : null;
         } catch { return null; }
+    }
+
+    // Last current team per user (auth.teams.remember): keyed by project and user, so a shared device never crosses users
+    const teamMemoryKey = (cfg, userId) => `manifest:auth:team:${cfg.endpoint}|${cfg.projectId}|${userId}`;
+    // Most recent users first; only the last TEAM_MEMORY_USERS keep an entry per project
+    const TEAM_MEMORY_USERS = 10;
+    const teamMemoryIndexKey = cfg => `manifest:auth:team-users:${cfg.endpoint}|${cfg.projectId}`;
+    function rememberTeamFor(cfg, userId, teamId) {
+        localStorage.setItem(teamMemoryKey(cfg, userId), teamId);
+        let users = [];
+        try { users = JSON.parse(localStorage.getItem(teamMemoryIndexKey(cfg)) || '[]'); } catch (e) { users = []; }
+        users = [userId, ...(Array.isArray(users) ? users : []).filter(id => id !== userId)];
+        for (const dropped of users.slice(TEAM_MEMORY_USERS)) localStorage.removeItem(teamMemoryKey(cfg, dropped));
+        localStorage.setItem(teamMemoryIndexKey(cfg), JSON.stringify(users.slice(0, TEAM_MEMORY_USERS)));
     }
 
     // Identity this tab is showing data for: while unverified, the last one mirrored
@@ -170,6 +195,8 @@ function initializeAuthStore() {
         _otpMigrationTicket: null, // OTP: { ticket, userId } guest-migration ticket, kept across failed verify attempts
         teams: [], // List of user's teams
         currentTeam: null, // Currently selected/active team
+        startTeamId: null, // App-chosen team to start on when the teams first load (used if the user has it)
+        _startTeamUserId: null, // user the startTeamId was first used for
         _teamsPollInterval: null, // Interval ID for teams polling (deprecated, use realtime instead)
         _teamsRealtimeUnsubscribe: null, // Realtime subscription cleanup function (may be array of unsubscribes)
         _teamsRealtimeSubscribing: false, // Flag to prevent recursive subscription during refresh
@@ -201,13 +228,28 @@ function initializeAuthStore() {
         inviteEmail: '',
         inviteRoles: [], // Array of selected roles for checkboxes
         currentTeamMemberships: [],
-        _ownMembership: null, // { teamId, userId, membership }: the user's own membership as of the newest listing
+        currentTeamMembershipsTotal: 0, // Appwrite's total for the current team's last listing
+        // Last listed membership id while more remain: pass to Query.cursorAfter for the next page
+        get currentTeamMembershipsCursor() {
+            const list = this.currentTeamMemberships || [];
+            return list.length && list.length < (this.currentTeamMembershipsTotal || 0) ? list[list.length - 1].$id : null;
+        },
+        _ownMembership: null, // { teamId, userId, membership, status }: the user's own membership as of the newest listing
         _ownGen: 0, // bumped by each listing and reset; an older own-membership answer is dropped
         _ownRetryTimer: null,
-        _ownRetryMs: 5000, // delay of the single retry after a failed own-membership fetch
+        _ownRetryDelays: [5000, 15000, 45000], // retries after a failed own-membership fetch
         // The current user's membership in the current team (read-only; null until known or when there is none)
         get currentTeamMembership() {
             return this._currentMembership();
+        },
+        // Why currentTeamMembership is what it is: 'loading' | 'ready' | 'none' | 'error', or null with no current team or signed out
+        get currentTeamMembershipStatus() {
+            const teamId = this.currentTeam?.$id;
+            const userId = this.user?.$id;
+            if (!teamId || !userId || !this.isAuthenticated) return null;
+            if (this._currentMembership()) return 'ready';
+            const own = this._ownMembership;
+            return own && own.teamId === teamId && own.userId === userId && own.status !== 'ready' ? own.status : 'loading';
         },
         deletedTemplateTeams: [],
         deletedTemplateRoles: [], // Deleted template roles (can be reapplied)
@@ -222,6 +264,7 @@ function initializeAuthStore() {
         _initializing: false,
         _initAnnounced: false, // manifest:auth:initialized has fired
         _appwrite: null,
+        _appwriteConfig: null,
         _guestAuto: false,
         _guestManual: false,
         _signInPendingUntil: 0, // signed-out init with guest-auto or an auth callback still to sign in
@@ -419,6 +462,7 @@ function initializeAuthStore() {
             // Hoisted so the post-init background team load (below) can read it.
             let appwriteConfig = null;
             let earlyTeams = null;
+            let earlyMembers = null;
 
             try {
                 const appwrite = await config.getAppwriteClient();
@@ -433,6 +477,7 @@ function initializeAuthStore() {
 
                 // Get auth methods config from manifest
                 appwriteConfig = await config.getAppwriteConfig();
+                this._appwriteConfig = appwriteConfig; // read synchronously where an await would reorder requests
                 this._guestAuto = appwriteConfig?.guestAuto === true;
                 this._guestManual = appwriteConfig?.guestManual === true;
                 this.guestManualEnabled = appwriteConfig?.guestManual === true;
@@ -441,6 +486,7 @@ function initializeAuthStore() {
                 try {
                     const restoring = this._restoreSession(appwrite);
                     earlyTeams = this._prefetchTeams(appwrite, appwriteConfig);
+                    earlyMembers = earlyTeams && this._prefetchStartTeam(appwrite, appwriteConfig);
                     await restoring;
 
                     // Team loading is deferred (not awaited) — runs in the background after
@@ -498,7 +544,8 @@ function initializeAuthStore() {
                 const owner = this.user?.$id;
                 const prefetched = earlyTeams && earlyTeams.userId === owner && earlyTeams.authEpoch === this._authEpoch
                     && earlyTeams.teamsEpoch === this._teamsEpoch ? earlyTeams : null;
-                this._loadTeamsAndSeed(appwriteConfig, { prefetched })
+                const prefetchedMembers = prefetched && earlyMembers ? earlyMembers : null;
+                this._loadTeamsAndSeed(appwriteConfig, { prefetched, prefetchedMembers })
                     .then(() => {
                         if (!this.isAuthenticated || this.user?.$id !== owner) return;
                         window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded', {
@@ -580,6 +627,75 @@ function initializeAuthStore() {
             return { userId: hint.userId, authEpoch: this._authEpoch, teamsEpoch: this._teamsEpoch, request, used: false };
         },
 
+        // Starting team's members and prefs, alongside the identity check; listMemberships uses them only for that team, user and epoch
+        _prefetchStartTeam(appwrite, cfg) {
+            const hint = persistedIdentity();
+            if (!hint || typeof appwrite?.teams?.listMemberships !== 'function' || typeof appwrite.teams.getPrefs !== 'function') return null;
+            const teamId = this.startTeamId || (hint.isAnonymous ? null : this._rememberedTeamId(cfg, hint.userId));
+            if (!teamId) return null;
+            const queries = this._memberQueries(cfg);
+            const settle = call => { try { return Promise.resolve(call()).then(value => ({ value }), error => ({ error })); } catch (error) { return Promise.resolve({ error }); } };
+            return {
+                teamId, userId: hint.userId, authEpoch: this._authEpoch, teamsEpoch: this._teamsEpoch, queries, used: false,
+                members: settle(() => appwrite.teams.listMemberships({ teamId, queries })),
+                prefs: settle(() => appwrite.teams.getPrefs({ teamId })),
+            };
+        },
+
+        // Every member of a team, 100 per page, for internal checks and copies: never shown, and it leaves the
+        // current team's list and own membership alone (those follow their own listings)
+        async _listAllMemberships(teamId) {
+            if (!this._appwrite?.teams) return { success: false, error: 'Appwrite not configured' };
+            const Query = window.Appwrite?.Query;
+            if (!Query?.limit || !Query?.cursorAfter) return { success: false, error: 'Appwrite Query is not available' };
+            const memberships = [];
+            try {
+                let cursor = null;
+                for (let page = 0; page < 10000; page++) {
+                    const queries = [Query.limit(100), ...(cursor ? [Query.cursorAfter(cursor)] : [])];
+                    const result = await this._appwrite.teams.listMemberships({ teamId, queries });
+                    const rows = result?.memberships || [];
+                    memberships.push(...rows);
+                    if (rows.length < 100) break;
+                    cursor = rows[rows.length - 1].$id;
+                }
+                return { success: true, memberships, total: memberships.length };
+            } catch (error) {
+                return { success: false, error: error?.message || String(error) };
+            }
+        },
+
+        // Queries for a member listing that brings none of its own (auth.teams.memberLimit)
+        _memberQueries(cfg) {
+            return cfg?.memberLimit && window.Appwrite?.Query?.limit ? [window.Appwrite.Query.limit(cfg.memberLimit)] : [];
+        },
+
+        _rememberedTeamId(cfg, userId) {
+            if (!cfg?.rememberTeam || !userId) return null;
+            try { return localStorage.getItem(teamMemoryKey(cfg, userId)) || null; } catch { return null; }
+        },
+
+        // Team to start on: the app's startTeamId, else the remembered one, if this user still has it
+        _startTeam(cfg, teams) {
+            if (this.startTeamId && !this._startTeamUserId) this._startTeamUserId = this.user?.$id || null;
+            const remembered = this.isAnonymous ? null : this._rememberedTeamId(cfg, this.user?.$id);
+            for (const id of [this.startTeamId, remembered]) {
+                const team = id && (teams || []).find(t => t.$id === id);
+                if (team) return team;
+            }
+            return null;
+        },
+
+        // Record the current team as this signed-in user's starting team (auth.teams.remember)
+        async _rememberTeam(team) {
+            const teamId = team?.$id;
+            const userId = this.user?.$id;
+            if (!teamId || !userId || this.isAnonymous) return;
+            const cfg = await config.getAppwriteConfig();
+            if (!cfg?.rememberTeam || this.currentTeam?.$id !== teamId || this.user?.$id !== userId || this.isAnonymous) return;
+            try { rememberTeamFor(cfg, userId, teamId); } catch (e) { }
+        },
+
         // The current user's membership in the current team, from the listed page or fetched on its own; null means none (no permissions)
         _currentMembership() {
             const teamId = this.currentTeam?.$id;
@@ -599,19 +715,21 @@ function initializeAuthStore() {
             const gen = ++this._ownGen;
             if (this._ownRetryTimer) { clearTimeout(this._ownRetryTimer); this._ownRetryTimer = null; }
             const listed = page.find(m => m.userId === userId);
-            if (listed || (!filtered && !(total > page.length))) {
-                this._ownMembership = { teamId, userId, membership: listed || null };
-                return;
-            }
-            await this._fetchOwnMembership(teamId, userId, gen, true);
+            if (listed) { this._ownMembership = { teamId, userId, membership: listed, status: 'ready' }; return; }
+            if (!filtered && !(total > page.length)) { this._ownMembership = { teamId, userId, membership: null, status: 'none' }; return; }
+            await this._fetchOwnMembership(teamId, userId, gen, 0);
         },
 
         // Applied only while it is the newest word for this team and user; a hung fetch is abandoned (denied) after the bounded wait
-        async _fetchOwnMembership(teamId, userId, gen, retry) {
+        async _fetchOwnMembership(teamId, userId, gen, attempt) {
             const current = () => this._ownGen === gen && this.currentTeam?.$id === teamId && this.user?.$id === userId;
-            const deny = () => { this._ownMembership = { teamId, userId, membership: null }; };
+            const set = (membership, status) => { this._ownMembership = { teamId, userId, membership, status }; };
+            const failed = () => { set(null, 'error'); this._scheduleOwnRetry(teamId, userId, gen, attempt); };
             const Query = window.Appwrite?.Query;
-            if (!Query?.equal) { deny(); return; }
+            if (!Query?.equal) { set(null, 'error'); return; }
+            // A known membership is served while this runs; otherwise the status reads loading
+            const known = this._ownMembership;
+            if (!(known && known.teamId === teamId && known.userId === userId && known.membership)) set(null, 'loading');
             const request = (async () => {
                 const queries = [Query.equal('userId', [userId]), ...(Query.limit ? [Query.limit(1)] : [])];
                 const result = await this._appwrite.teams.listMemberships({ teamId, queries });
@@ -626,32 +744,30 @@ function initializeAuthStore() {
             clearTimeout(timer);
             if (!current()) return;
             if (answer.timedOut) {
-                deny();
+                set(null, 'error');
                 request.then(late => {
                     if (!current()) return;
-                    if (late.error) { if (retry) this._scheduleOwnRetry(teamId, userId, gen); return; }
-                    this._ownMembership = { teamId, userId, membership: late.membership };
+                    if (late.error) { failed(); return; }
+                    set(late.membership, late.membership ? 'ready' : 'none');
                     if (this.refreshPermissionCache) this.refreshPermissionCache().catch(() => { });
                 });
                 return;
             }
-            if (answer.error) {
-                deny();
-                if (retry) this._scheduleOwnRetry(teamId, userId, gen);
-                return;
-            }
-            this._ownMembership = { teamId, userId, membership: answer.membership };
+            if (answer.error) { failed(); return; }
+            set(answer.membership, answer.membership ? 'ready' : 'none');
         },
 
-        // One delayed retry after a failed own-membership fetch, dropped if anything newer arrives first
-        _scheduleOwnRetry(teamId, userId, gen) {
+        // Retries after a failed own-membership fetch, on a capped backoff; any newer listing, team switch or reset drops them
+        _scheduleOwnRetry(teamId, userId, gen, attempt) {
+            const delays = this._ownRetryDelays || [];
+            if (attempt >= delays.length) return;
             if (this._ownRetryTimer) clearTimeout(this._ownRetryTimer);
             this._ownRetryTimer = setTimeout(async () => {
                 this._ownRetryTimer = null;
                 if (this._ownGen !== gen || this.currentTeam?.$id !== teamId || this.user?.$id !== userId) return;
-                await this._fetchOwnMembership(teamId, userId, gen, false);
+                await this._fetchOwnMembership(teamId, userId, gen, attempt + 1);
                 if (this._ownGen === gen && this.refreshPermissionCache) this.refreshPermissionCache().catch(() => { });
-            }, this._ownRetryMs ?? 5000);
+            }, delays[attempt]);
         },
 
         // Offline-booted tab: re-run the session check once Appwrite is reachable
@@ -703,6 +819,7 @@ function initializeAuthStore() {
             this.teams = [];
             this.currentTeam = null;
             this.currentTeamMemberships = [];
+            this.currentTeamMembershipsTotal = 0;
             this._ownMembership = null;
             this._ownGen++;
             if (this._ownRetryTimer) { clearTimeout(this._ownRetryTimer); this._ownRetryTimer = null; }
@@ -761,7 +878,7 @@ function initializeAuthStore() {
 
         // Load the user's teams and seed configured defaults. Shared by the guest,
         // magic-link, OAuth, and init/restore paths.
-        async _loadTeamsAndSeed(appwriteConfig, { seed = true, prefetched = null } = {}) {
+        async _loadTeamsAndSeed(appwriteConfig, { seed = true, prefetched = null, prefetchedMembers = null } = {}) {
             const cfg = appwriteConfig || await config.getAppwriteConfig();
             if (!cfg?.teams) {
                 return;
@@ -781,7 +898,7 @@ function initializeAuthStore() {
             // Always load the user's real teams. Capture the result — never seed defaults
             // off an unconfirmed team list: a failed/incomplete load must not read as
             // "teamless" and mint a duplicate tenant (the settle-window mis-provision).
-            const loadResult = prefetched ? await this.listTeams([], '', { prefetched }) : await this.listTeams();
+            const loadResult = prefetched ? await this.listTeams([], '', { prefetched, prefetchedMembers }) : await this.listTeams();
             if (!needsSeed) {
                 return;
             }

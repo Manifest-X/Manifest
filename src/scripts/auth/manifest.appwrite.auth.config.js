@@ -313,6 +313,8 @@ async function ensureManifest() {
     }
 }
 
+let memberLimitWarned = false;
+
 // Get Appwrite config from manifest
 async function getAppwriteConfig() {
     const manifest = await ensureManifest();
@@ -352,12 +354,24 @@ async function getAppwriteConfig() {
     const permanentTeams = appwriteConfig.auth?.teams?.permanent || null; // immutable
     const templateTeams = appwriteConfig.auth?.teams?.template || null; // deletable + reappliable
     const teamsPollInterval = appwriteConfig.auth?.teams?.pollInterval || null; // ms, null = disabled
+    // Page size of the framework's own member listings: an integer from 1 to 100, else Appwrite's default (25)
+    const rawMemberLimit = appwriteConfig.auth?.teams?.memberLimit;
+    let memberLimit = null;
+    if (rawMemberLimit !== undefined && rawMemberLimit !== null && rawMemberLimit !== '') {
+        const n = typeof rawMemberLimit === 'number' || typeof rawMemberLimit === 'string' ? Number(rawMemberLimit) : NaN;
+        if (Number.isInteger(n) && n >= 1 && n <= 100) memberLimit = n;
+        else if (!memberLimitWarned) {
+            memberLimitWarned = true;
+            console.warn('[Manifest Appwrite Auth] auth.teams.memberLimit must be an integer from 1 to 100; using Appwrite\'s default:', rawMemberLimit);
+        }
+    }
     // Coerce a config boolean that may arrive as an interpolated string. `${VAR}`
     // placeholders resolve to strings, so a bare !! would read "false" as truthy and
     // break per-environment config (e.g. teams.guests via `${PUBLIC_GUESTS}`).
     const toBool = v => typeof v === 'string' ? /^(true|1|yes|on)$/i.test(v.trim()) : !!v;
 
     const guestTeams = toBool(appwriteConfig.auth?.teams?.guests); // seed default teams for guests
+    const rememberTeam = toBool(appwriteConfig.auth?.teams?.remember); // start each signed-in user on their last current team
     // Seed default teams for authenticated (non-anonymous) sessions. Defaults to true
     // (historical behavior). Set teams.authenticated:false with teams.guests:true to make
     // seeding guest-only — e.g. a per-guest sandbox that must never be minted for a
@@ -416,6 +430,8 @@ async function getAppwriteConfig() {
         permanentTeams: permanentTeams,
         templateTeams: templateTeams,
         teamsPollInterval: teamsPollInterval,
+        memberLimit: memberLimit,
+        rememberTeam: rememberTeam,
         guestTeams: guestTeams,
         authenticatedTeams: authenticatedTeams, // seed defaults for authenticated sessions (default true)
         guestUpgrade: guestUpgrade,

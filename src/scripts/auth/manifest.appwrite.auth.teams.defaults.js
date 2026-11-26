@@ -467,6 +467,7 @@ async function ensureDefaultTeams(store) {
         const allDefaultTeams = [...existingTeams, ...createdTeams];
         if (allDefaultTeams.length > 0) {
             store.currentTeam = allDefaultTeams[0];
+            if (store._rememberTeam) store._rememberTeam(store.currentTeam);
         }
     }
 

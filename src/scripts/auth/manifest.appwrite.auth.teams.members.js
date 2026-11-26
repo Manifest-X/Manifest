@@ -111,7 +111,7 @@ function initializeTeamsMembers() {
             };
 
             // List team memberships
-            store.listMemberships = async function (teamId, queries = [], search = '') {
+            store.listMemberships = async function (teamId, queries = [], search = '', { prefetched = null } = {}) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
                 }
@@ -125,6 +125,11 @@ function initializeTeamsMembers() {
 
                 try {
                     const ownQueries = !!(queries && queries.length);
+                    // A listing with no queries of its own uses auth.teams.memberLimit when set
+                    if (!queries || queries.length === 0) {
+                        const memberQueries = this._memberQueries ? this._memberQueries(this._appwriteConfig || await config.getAppwriteConfig()) : [];
+                        if (memberQueries.length) queries = memberQueries;
+                    }
                     const params = {
                         teamId: teamId,
                         queries: queries
@@ -132,10 +137,27 @@ function initializeTeamsMembers() {
                     if (search && search.trim().length > 0) {
                         params.search = search;
                     }
-                    const request = this._appwrite.teams.listMemberships(params);
+                    // Boot prefetch of the starting team: once, for this team, user, epoch and queries
+                    const userId = this.user?.$id;
+                    const early = prefetched && !prefetched.used && prefetched.teamId === teamId && !params.search && prefetched.userId === userId
+                        && prefetched.authEpoch === this._authEpoch && prefetched.teamsEpoch === this._teamsEpoch
+                        && JSON.stringify(prefetched.queries) === JSON.stringify(queries) ? prefetched : null;
+                    if (early) {
+                        early.used = true;
+                        if (this._seedTeamPrefs) this._seedTeamPrefs(teamId, early.prefs);
+                    }
+                    const request = early ? null : this._appwrite.teams.listMemberships(params);
                     // The current team's prefs are needed next (display roles, permissions): read them alongside
                     if (this.currentTeam?.$id === teamId && this.getUserGeneratedRoles) this.getUserGeneratedRoles(teamId).catch(() => { });
-                    const result = await request;
+                    let result = null;
+                    if (early) {
+                        let timer;
+                        const answer = await Promise.race([early.members, new Promise(r => { timer = setTimeout(() => r({ timedOut: true }), this._prefetchWaitMs ?? 3000); })]);
+                        clearTimeout(timer);
+                        if (!answer.timedOut && !answer.error && answer.value && early.authEpoch === this._authEpoch
+                            && early.teamsEpoch === this._teamsEpoch && this.user?.$id === userId) result = answer.value;
+                    }
+                    if (!result) result = await (request || this._appwrite.teams.listMemberships(params));
                     let memberships = result.memberships || [];
 
                     // Enhance memberships with user email if missing
@@ -250,6 +272,7 @@ function initializeTeamsMembers() {
                     // Use spread operator to create new array reference for Alpine reactivity
                     if (this.currentTeam && this.currentTeam.$id === teamId) {
                         this.currentTeamMemberships = [...memberships];
+                        this.currentTeamMembershipsTotal = result.total || memberships.length;
                         // Refresh permission cache after loading memberships
                         if (this.refreshPermissionCache) {
                             await this.refreshPermissionCache();
@@ -263,6 +286,7 @@ function initializeTeamsMembers() {
                         // Silently return empty memberships for deleted teams
                         if (this.currentTeam && this.currentTeam.$id === teamId) {
                             this.currentTeamMemberships = [];
+                            this.currentTeamMembershipsTotal = 0;
                         }
                         return { success: true, memberships: [], total: 0 };
                     }
@@ -465,7 +489,9 @@ function initializeTeamsMembers() {
 
                 // Optimistically remove member from UI immediately (only the current team's list is shown)
                 if (this.currentTeam?.$id === teamId && this.currentTeamMemberships && Array.isArray(this.currentTeamMemberships)) {
-                    this.currentTeamMemberships = this.currentTeamMemberships.filter(m => m.$id !== membershipId);
+                    const kept = this.currentTeamMemberships.filter(m => m.$id !== membershipId);
+                    if (kept.length < this.currentTeamMemberships.length) this.currentTeamMembershipsTotal = Math.max(0, (this.currentTeamMembershipsTotal || 0) - 1);
+                    this.currentTeamMemberships = kept;
                 }
 
                 try {

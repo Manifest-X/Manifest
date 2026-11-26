@@ -230,7 +230,7 @@ function serverStart({ index = 29, roles = ['Admin', 'owner'], hold = () => fals
         },
     })
     if (wait) p.store._prefetchWaitMs = wait
-    if (retryMs) p.store._ownRetryMs = retryMs
+    if (retryMs) p.store._ownRetryDelays = [retryMs, retryMs * 2, retryMs * 3]
     return { ...p, srv }
 }
 const limit = n => JSON.stringify({ method: 'limit', values: [n] })
@@ -344,7 +344,7 @@ describe('a hung or failed own-membership fetch', () => {
         expect(perms(p.store)).toEqual(NONE)
     })
 
-    it('failed: denied, then one delayed retry recovers without the app doing anything', async () => {
+    it('failed: denied, then a delayed retry recovers without the app doing anything', async () => {
         let failures = 1
         const p = serverStart({ fail: (a, own) => own && failures-- > 0, retryMs: 100 })
         await loaded(p)
@@ -354,13 +354,22 @@ describe('a hung or failed own-membership fetch', () => {
         expect(p.srv.ownCalls).toBe(2)
     })
 
-    it('failed twice: one retry only, then the next listing tries again', async () => {
+    it('failed twice: the second retry recovers', async () => {
         let failures = 2
-        const p = serverStart({ fail: (a, own) => own && failures-- > 0, retryMs: 50 })
+        const p = serverStart({ fail: (a, own) => own && failures-- > 0, retryMs: 40 })
         await loaded(p)
-        await sleep(200)
-        expect(p.srv.ownCalls).toBe(2)
-        expect(perms(p.store)).toEqual(NONE)
+        await until(() => p.store._permissionCache.inviteMembers === true, 2000)
+        expect(p.srv.ownCalls).toBe(3)
+    })
+
+    it('failing every time: three retries on a growing delay, then the next listing tries again', async () => {
+        let failures = 4
+        const p = serverStart({ fail: (a, own) => own && failures-- > 0, retryMs: 30 })
+        await loaded(p)
+        await sleep(400)
+        expect(p.srv.ownCalls).toBe(4)
+        expect(p.store._ownRetryTimer).toBe(null)
+        expect(p.store.currentTeamMembershipStatus).toBe('error')
         await p.store.viewTeam(p.store.teams[0])
         expect(perms(p.store)).toEqual(ADMIN)
     })

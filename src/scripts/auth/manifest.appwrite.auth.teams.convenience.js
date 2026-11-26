@@ -294,6 +294,7 @@ function initializeTeamsConvenience() {
                                     await this.viewTeam(remainingTeam);
                                 } else {
                                     this.currentTeam = remainingTeam;
+                                    if (this._rememberTeam) this._rememberTeam(remainingTeam);
                                 }
                             }
                         }
@@ -305,6 +306,7 @@ function initializeTeamsConvenience() {
                 // Convenience method: view team (sets current team and loads memberships)
                 store.viewTeam = async function (team) {
                     this.currentTeam = team;
+                    if (this._rememberTeam) this._rememberTeam(team);
                     // Reset rename input to current team name when viewing a team
                     if (team && team.name) {
                         this.updateTeamNameInput = team.name;
