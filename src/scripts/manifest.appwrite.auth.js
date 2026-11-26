@@ -719,6 +719,10 @@ function initializeAuthStore() {
         inviteRoles: [], // Array of selected roles for checkboxes
         currentTeamMemberships: [],
         _ownMembership: null, // { teamId, userId, membership } when the listed page lacks the current user
+        // The current user's membership in the current team (read-only; null until known or when there is none)
+        get currentTeamMembership() {
+            return this._currentMembership();
+        },
         deletedTemplateTeams: [],
         deletedTemplateRoles: [], // Deleted template roles (can be reapplied)
         _teamImmutableCache: {},
@@ -1116,6 +1120,9 @@ function initializeAuthStore() {
                         const queries = [Query.equal('userId', [userId]), ...(Query.limit ? [Query.limit(1)] : [])];
                         const result = await this._appwrite.teams.listMemberships({ teamId, queries });
                         membership = (result?.memberships || []).find(m => m.userId === userId) || null;
+                        if (membership && Array.isArray(membership.roles) && this.normalizeRolesForDisplay) {
+                            membership.displayRoles = await this.normalizeRolesForDisplay(membership.roles, teamId);
+                        }
                     }
                 } catch (e) {
                     membership = null;

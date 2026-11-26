@@ -161,3 +161,42 @@ describe('own membership outside the listed page', () => {
         expect(p.store.hasTeamPermissionSync('inviteMembers')).toBe(false)
     })
 })
+
+describe('$auth.currentTeamMembership', () => {
+    it('from the listed page, with display roles', async () => {
+        const p = start({ t1Index: 3 })
+        await loaded(p)
+        expect(p.store.currentTeamMembership.$id).toBe('t1-me')
+        expect(p.store.currentTeamMembership.roles).toEqual(['Viewer'])
+        expect(p.store.currentTeamMembership.displayRoles).toEqual(['Viewer'])
+    })
+
+    it('from the direct fetch, with display roles; null while it loads', async () => {
+        const p = start({ t1Roles: ['Admin', 'owner'], hold: new Set(['own:t1']) })
+        await until(() => memberCalls(p).includes('t1:own'))
+        expect(p.store.currentTeamMembership).toBe(null)
+        p.fake.calls.find(c => !c.settled && c.args[0]?.queries?.length).resolve({ memberships: [{ ...p.teams.t1[29] }], total: 1 })
+        await loaded(p)
+        expect(p.store.currentTeamMembership.$id).toBe('t1-me')
+        expect(p.store.currentTeamMembership.displayRoles).toEqual(['Admin'])
+    })
+
+    it('follows team switches, is null after logout, and cannot be assigned', async () => {
+        const p = start({ t1Index: 3 })
+        await loaded(p)
+        await p.store.viewTeam(p.store.teams[1])
+        expect(p.store.currentTeamMembership.$id).toBe('t2-me')
+        try { p.store.currentTeamMembership = { $id: 'fake', roles: ['owner'] } } catch (e) { /* strict-mode TypeError */ }
+        expect(p.store.currentTeamMembership.$id).toBe('t2-me')
+        p.fake.appwrite.account.deleteSession = async () => ({})
+        await p.store.logout()
+        expect(p.store.currentTeamMembership).toBe(null)
+    })
+
+    it('null when the user has no membership in the listing', async () => {
+        const p = start({ t1Index: 99 }) // not among the 30
+        await loaded(p)
+        expect(p.store.currentTeamMembership).toBe(null)
+        expect(perms(p.store)).toEqual(NONE)
+    })
+})
