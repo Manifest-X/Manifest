@@ -53,12 +53,12 @@ describe('auth.teams.remember parsing', () => {
 })
 
 describe('auth.teams.memberLimit', () => {
-    it('validates: integers 1-5000 (numeric strings from env interpolation too), else Appwrite\'s default with one warning', async () => {
+    it('validates: integers 1-100 (numeric strings from env interpolation too), else Appwrite\'s default with one warning', async () => {
         expect((await configFor({ memberLimit: 100 })).memberLimit).toBe(100)
         expect((await configFor({ memberLimit: '100' })).memberLimit).toBe(100)
-        expect((await configFor({ memberLimit: 5000 })).memberLimit).toBe(5000)
+        expect((await configFor({ memberLimit: 1 })).memberLimit).toBe(1)
         expect((await configFor({})).memberLimit).toBe(null)
-        for (const bad of [0, 5001, 1.5, 'abc', -3, true]) {
+        for (const bad of [0, 101, 5000, 1.5, 'abc', -3, true]) {
             const { memberLimit, warnings } = await configFor({ memberLimit: bad })
             expect(memberLimit).toBe(null)
             expect(warnings).toHaveLength(1)

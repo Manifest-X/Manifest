@@ -354,15 +354,15 @@ async function getAppwriteConfig() {
     const permanentTeams = appwriteConfig.auth?.teams?.permanent || null; // immutable
     const templateTeams = appwriteConfig.auth?.teams?.template || null; // deletable + reappliable
     const teamsPollInterval = appwriteConfig.auth?.teams?.pollInterval || null; // ms, null = disabled
-    // Page size of the framework's own member listings: an integer in Appwrite's 1-5000, else Appwrite's default
+    // Page size of the framework's own member listings: an integer from 1 to 100, else Appwrite's default (25)
     const rawMemberLimit = appwriteConfig.auth?.teams?.memberLimit;
     let memberLimit = null;
     if (rawMemberLimit !== undefined && rawMemberLimit !== null && rawMemberLimit !== '') {
         const n = typeof rawMemberLimit === 'number' || typeof rawMemberLimit === 'string' ? Number(rawMemberLimit) : NaN;
-        if (Number.isInteger(n) && n >= 1 && n <= 5000) memberLimit = n;
+        if (Number.isInteger(n) && n >= 1 && n <= 100) memberLimit = n;
         else if (!memberLimitWarned) {
             memberLimitWarned = true;
-            console.warn('[Manifest Appwrite Auth] auth.teams.memberLimit must be an integer from 1 to 5000; using Appwrite\'s default:', rawMemberLimit);
+            console.warn('[Manifest Appwrite Auth] auth.teams.memberLimit must be an integer from 1 to 100; using Appwrite\'s default:', rawMemberLimit);
         }
     }
     // Coerce a config boolean that may arrive as an interpolated string. `${VAR}`

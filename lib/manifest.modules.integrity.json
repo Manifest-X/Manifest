@@ -1,6 +1,6 @@
 {
-  "manifest.appwrite.auth.js": "sha384-8twYdmKIFyK3zlSONjFjkrktxJBJSStyEpZ5fQLW9VwuSXzb+FaGEozpumHxhtf7",
-  "manifest.appwrite.auth.min.js": "sha384-Rev60liSiSLCvZLI6Ol3Yp7jex+w64leUPad5Z00ttUz1LRkCMop9mBabFHEttPb",
+  "manifest.appwrite.auth.js": "sha384-vUWTEIDej0ltHjh5GXXvUtVtvLu7BlYVX6Chrit2nzApHBfbMpK8HXcyt9OoBM/V",
+  "manifest.appwrite.auth.min.js": "sha384-wh3vnQ1BoY6sbf21ZAzn3CZVQUcIiJOz6IjMd1M36rXiNbh9gKMay3+SDutqBA+q",
   "manifest.appwrite.data.js": "sha384-0Zw/SjOxQkvQ8+VaILaOtWAp8JdQtTonOtCjw8flbZcXEPRNhbUvkWfJsNgbdMVU",
   "manifest.appwrite.data.min.js": "sha384-abTYTgxGDsaSAF8rEPy942LcBIgiJaH95gPhg6bJK3xyP27U1FSN9Ev+/8O3XvaL",
   "manifest.appwrite.presences.js": "sha384-O3EedwV2QTzd4YotjvGPsDHbxaGbtRaZuNopC7/Cfoo5uYPo8ZHYkCPCWurXpA2/",
