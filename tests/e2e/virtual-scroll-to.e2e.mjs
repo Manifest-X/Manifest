@@ -712,6 +712,48 @@ async function main() {
             await p.close()
         }
 
+        // Round 4: at the end, outside upward scrolls during the follow cancel; hidden time is not settle time
+        {
+            const grow = encodeURIComponent(`x-init="let k = 0; const t = setInterval(() => { if (!$el.isConnected || ++k > 40) return clearInterval(t); $el.querySelector('.pad').style.height = (row.h + k * 2) + 'px' }, 70)"`)
+            const sb = await puppeteer.launch({ headless: 'shell', args: ['--no-sandbox'], ignoreDefaultArgs: ['--hide-scrollbars'] })
+            try {
+                for (const [label, route] of [['rows sizing', `/auto?row=${grow}`], ['no late sizing', '/auto']]) {
+                    for (const how of ['own code scrollTop -= 500', 'scrollbar track click']) {
+                        const p = await sb.newPage(); p.errors = []; p.on('pageerror', (e) => p.errors.push(e.message))
+                        await p.goto(base + route, { waitUntil: 'load' })
+                        await p.waitForFunction(() => window.Alpine && document.querySelector('#v [data-virtual-spacer]') && window.T, { timeout: 10000 })
+                        const b = await (await p.$('#v')).boundingBox()
+                        const bad = []
+                        for (let i = 0; i < 6; i++) {
+                            await run(p, () => T.set(100000 + Math.random() * 100000))
+                            await run(p, () => T.api().scrollToIndex(T.data().items.length - 1, { align: 'end' }).then(() => new Promise((r) => setTimeout(r, 150))))
+                            await run(p, () => { window.__mark = performance.now(); window.__st0 = T.v().scrollTop; window.__min = Infinity; if (!window.__minOn) { window.__minOn = true; T.v().addEventListener('scroll', () => { window.__min = Math.min(window.__min, T.v().scrollTop) }) } })
+                            if (how.startsWith('own')) await run(p, () => { T.set(T.v().scrollTop - 500) })
+                            else await p.mouse.click(b.x + b.width - 4, b.y + 100)
+                            await run(p, () => new Promise((r) => setTimeout(r, 1200)))
+                            const r = await run(p, () => ({ moved: Math.round(window.__st0 - window.__min), writes: window.__writes.filter((t) => t > window.__mark).length }))
+                            if (!(r.moved > 50) || r.writes) bad.push({ i, ...r })
+                        }
+                        check(bad.length === 0 && p.errors.length === 0, `end + follow (${label}): ${how} moves the list up and the seek stops (0 writes after), 6 of 6`, bad)
+                        await p.close()
+                    }
+                }
+            } finally { await sb.close() }
+            const p = await open('/auto?row=' + encodeURIComponent(`x-init="setTimeout(() => $el.querySelector('.pad').style.height = (row.h + 50) + 'px', 30 + (row.id % 4) * 20)"`))
+            const r = await run(p, async () => {
+                let at = null, el = 'pending'
+                T.api().scrollToIndex(1800, { align: 'center' }).then((e) => { el = e ? e.dataset.n : null; at = T.at(1800) })
+                await frames_(1); T.v().style.display = 'none'
+                await new Promise((r) => setTimeout(r, 5000))
+                const whileHidden = el
+                T.v().style.display = ''
+                await new Promise((r) => setTimeout(r, 2500))
+                return { whileHidden, el, at }
+            })
+            check(!r.error && r.whileHidden === 'pending' && r.el === 'n1800' && aligned(r.at, 'center'), 'hidden 5 s one frame into a seek: lands centred when shown (hidden time is not settle time)', r)
+            await done(p, 'hidden settle time')
+        }
+
         // No cost when unused: no listener or observer beyond what the list already had
         {
             const pb = BASELINE ? await open('/block?h=v&base=1') : null

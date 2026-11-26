@@ -48,7 +48,7 @@ beforeAll(async () => {
     }
     Object.defineProperty(v, 'scrollHeight', { configurable: true, get() { return offsetOf(null) } })
     let top = 0
-    Object.defineProperty(v, 'scrollTop', { configurable: true, get() { return top }, set(y) { top = Math.max(0, Math.min(v.scrollHeight - VIEW, y)); v.dispatchEvent(new Event('scroll')) } })
+    Object.defineProperty(v, 'scrollTop', { configurable: true, get() { return top }, set(y) { top = Math.max(0, Math.min(v.scrollHeight - VIEW, y)); setTimeout(() => v.dispatchEvent(new Event('scroll'))) } })
     v.scrollTo = function (o) { this.scrollTop = o.top }
     Alpine.start()
     await frame()
