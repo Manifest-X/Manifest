@@ -4756,7 +4756,10 @@ function initializeTeamsMembers() {
                     if (search && search.trim().length > 0) {
                         params.search = search;
                     }
-                    const result = await this._appwrite.teams.listMemberships(params);
+                    const request = this._appwrite.teams.listMemberships(params);
+                    // The current team's prefs are needed next (display roles, permissions): read them alongside
+                    if (this.currentTeam?.$id === teamId && this.getUserGeneratedRoles) this.getUserGeneratedRoles(teamId).catch(() => { });
+                    const result = await request;
                     let memberships = result.memberships || [];
 
                     // Enhance memberships with user email if missing
