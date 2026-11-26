@@ -64,7 +64,13 @@ function initializeTeamsRolesDefaults() {
                 let deletedRoles = [];
                 try {
                     if (this._appwrite && this._appwrite.teams) {
-                        const prefs = await this._appwrite.teams.getPrefs({ teamId });
+                        // Shared prefs read; a cached failure other than 404 is retried as its own read
+                        const fresh = () => this._appwrite.teams.getPrefs({ teamId }).then(prefs => ({ prefs }), error => ({ error }));
+                        const shared = typeof readTeamPrefs === 'function';
+                        let read = shared ? await readTeamPrefs(teamId, this._appwrite) : await fresh();
+                        if (shared && read.error && !String(read.error.message || '').includes('could not be found')) read = await fresh();
+                        if (read.error) throw read.error;
+                        const prefs = read.prefs;
                         // Deleted template roles are stored in team preferences under 'deletedTemplateRoles'
                         if (prefs && prefs.deletedTemplateRoles && Array.isArray(prefs.deletedTemplateRoles)) {
                             deletedRoles = prefs.deletedTemplateRoles;
@@ -135,11 +141,7 @@ function initializeTeamsRolesDefaults() {
                         roles: updatedRoles,
                         deletedTemplateRoles: deletedRoles // Update deleted list in team preferences
                     };
-                    invalidateRolesCache(teamId);
-                    await this._appwrite.teams.updatePrefs({
-                        teamId: teamId,
-                        prefs: updatedPrefs
-                    });
+                    await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
 
                     // Also remove from localStorage for backwards compatibility (if it exists)
                     try {
@@ -239,11 +241,7 @@ function initializeTeamsRolesDefaults() {
                             ...currentPrefs,
                             roles: updatedRoles
                         };
-                        invalidateRolesCache(teamId);
-                        await this._appwrite.teams.updatePrefs({
-                            teamId: teamId,
-                            prefs: updatedPrefs
-                        });
+                        await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
 
                         // Refresh cache for this team
                         if (this.getAllRoles) {

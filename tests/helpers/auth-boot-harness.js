@@ -46,6 +46,7 @@ export function offline() { return new TypeError('Failed to fetch') }
 // (value, Error, or undefined to leave it pending for the test to settle by hand)
 export function fakeAppwrite(responder) {
     const calls = []
+    const channels = {}
     const pending = () => calls.filter(c => !c.settled)
     const call = (name) => (...args) => {
         let resolve, reject
@@ -63,12 +64,15 @@ export function fakeAppwrite(responder) {
         teams: Object.fromEntries(['list', 'listMemberships', 'getPrefs', 'updatePrefs', 'get', 'create', 'delete', 'updateMembership'].map(n => [n, call(`teams.${n}`)])),
         realtime: null,
     }
+    // Opt-in realtime: subscribe records the handler per channel; emit() drives it
+    const enableRealtime = () => { appwrite.realtime = { subscribe(channel, cb) { channels[channel] = cb; return () => { delete channels[channel] } } } }
+    const emit = (channel, response) => channels[channel] && channels[channel](response)
     const settle = (name, value) => {
         const c = calls.find(x => x.name === name && !x.settled)
         if (!c) throw new Error(`settle: no pending ${name}`)
         value instanceof Error ? c.reject(value) : c.resolve(value)
     }
-    return { appwrite, calls, names: () => calls.map(c => c.name), settle, pending }
+    return { appwrite, calls, names: () => calls.map(c => c.name), settle, pending, enableRealtime, emit, channels }
 }
 
 function storage(initial = {}) {
@@ -77,8 +81,9 @@ function storage(initial = {}) {
 }
 
 // Boots a page: returns { store, events, fake, window }
-export function boot({ cfg, responder, persisted = null, search = '' }) {
+export function boot({ cfg, responder, persisted = null, search = '', realtime = false }) {
     const fake = fakeAppwrite(responder)
+    if (realtime) fake.enableRealtime()
     const target = new EventTarget()
     const docTarget = new EventTarget()
     setMaxListeners(100, target, docTarget)

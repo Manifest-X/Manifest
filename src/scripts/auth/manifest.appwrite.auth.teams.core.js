@@ -673,6 +673,8 @@ function initializeTeamsCore() {
                             // Refresh teams list if needed (only once per event batch)
                             // This also refreshes roles/permissions since they're stored in team preferences
                             if (shouldRefreshTeams && !this._teamsRealtimeSubscribing) {
+                                // Prefs may have changed elsewhere
+                                if (typeof invalidateRolesCache === 'function') invalidateRolesCache();
                                 this._teamsRealtimeSubscribing = true;
                                 if (this.listTeams) {
                                     this.listTeams().finally(() => {
@@ -895,6 +897,7 @@ function initializeTeamsCore() {
                 this._teamsPollInterval = setInterval(async () => {
                     if (this.isAuthenticated && this.listTeams) {
                         try {
+                            if (typeof invalidateRolesCache === 'function') invalidateRolesCache();
                             await this.listTeams();
                         } catch (error) {
                             console.warn('[Manifest Appwrite Auth] Teams polling error:', error);
@@ -933,11 +936,7 @@ function initializeTeamsCore() {
                 this.error = null;
 
                 try {
-                    invalidateRolesCache(teamId);
-                    const result = await this._appwrite.teams.updatePrefs({
-                        teamId: teamId,
-                        prefs: prefs
-                    });
+                    const result = await writeTeamPrefs(this._appwrite, teamId, prefs);
 
                     return { success: true, prefs: result };
                 } catch (error) {
