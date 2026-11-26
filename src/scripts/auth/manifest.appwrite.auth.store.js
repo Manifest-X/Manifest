@@ -212,6 +212,7 @@ function initializeAuthStore() {
         editingMember: null, // Current member being edited: { teamId, membershipId, roles }
         _initialized: false,
         _initializing: false,
+        _initAnnounced: false, // manifest:auth:initialized has fired
         _appwrite: null,
         _guestAuto: false,
         _guestManual: false,
@@ -471,6 +472,7 @@ function initializeAuthStore() {
 
                 // Fire as soon as identity is known, before teams load, so a session
                 // gate / splash clears in a few hundred ms.
+                this._initAnnounced = true;
                 window.dispatchEvent(new CustomEvent('manifest:auth:initialized', {
                     detail: {
                         isAuthenticated: this.isAuthenticated,

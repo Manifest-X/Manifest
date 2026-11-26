@@ -2,6 +2,7 @@
 
 // Initialize auth plugin - orchestrates all modules
 let _pluginInitializing = false;
+let _initHandled = false;
 async function initializeAppwriteAuthPlugin() {
     if (_pluginInitializing) {
         return;
@@ -28,7 +29,9 @@ async function initializeAppwriteAuthPlugin() {
             }
 
             // After store init, process callbacks and validate config
-            window.addEventListener('manifest:auth:initialized', async () => {
+            const onInitialized = async () => {
+                if (_initHandled) return;
+                _initHandled = true;
                 // Validate role configuration if roles module is loaded
                 if (store.validateRoleConfig) {
                     const validation = await store.validateRoleConfig();
@@ -51,7 +54,10 @@ async function initializeAppwriteAuthPlugin() {
                 if (!store.isAuthenticated && !store._sessionUnverified && store._guestAuto && store._createAnonymousSession) {
                     store._createAnonymousSession();
                 }
-            }, { once: true });
+            };
+            // Init may have finished inside the start delay
+            if (store._initAnnounced) onInitialized();
+            else window.addEventListener('manifest:auth:initialized', onInitialized, { once: true });
 
             _pluginInitializing = false;
         } else {
