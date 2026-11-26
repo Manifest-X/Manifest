@@ -188,3 +188,40 @@ describe('off by default', () => {
         expect(p.window.localStorage._map.size).toBe(2) // the mirrored auth state and the seeded entry only
     })
 })
+
+describe('$auth.startTeamId lifetime', () => {
+    const started = async () => {
+        const p = start({ config: cfg, onAlpineInit: s => { s.startTeamId = 't2' } })
+        await loaded(p)
+        expect(p.store.currentTeam.$id).toBe('t2')
+        return p
+    }
+
+    it('is cleared on logout', async () => {
+        const p = await started()
+        await p.store.logout()
+        expect(p.store.startTeamId).toBe(null)
+    })
+
+    it('is cleared when the session is cleared', async () => {
+        const p = await started()
+        p.window.dispatchEvent(new p.window.CustomEvent('manifest:auth:session-cleared'))
+        expect(p.store.startTeamId).toBe(null)
+    })
+
+    it('is cleared when a different user signs in; kept for the same user', async () => {
+        const p = await started()
+        p.window.dispatchEvent(new p.window.CustomEvent('manifest:auth:login', { detail: { user: userA } }))
+        expect(p.store.startTeamId).toBe('t2')
+        p.store.user = userB
+        p.window.dispatchEvent(new p.window.CustomEvent('manifest:auth:login', { detail: { user: userB } }))
+        expect(p.store.startTeamId).toBe(null)
+    })
+
+    it('set before anyone signed in, it applies to the first user who does', async () => {
+        const p = start({ config: cfg, onAlpineInit: s => { s.startTeamId = 't2' } })
+        await loaded(p)
+        expect(p.store.currentTeam.$id).toBe('t2')
+        expect(p.store._startTeamUserId).toBe('uA')
+    })
+})

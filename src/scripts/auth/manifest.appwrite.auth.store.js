@@ -17,6 +17,17 @@ function initializeAuthStore() {
     const SIGN_IN_PENDING_MS = 5000;
     ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
         window.addEventListener(type, () => { const store = Alpine.store('auth'); if (store) { store._signInPendingUntil = 0; store._authEpoch++; markVerified(store); } }));
+    // An app-chosen starting team belongs to the user it was first used for: dropped on sign-out or a different user
+    ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared'].forEach(type =>
+        window.addEventListener(type, () => {
+            const store = Alpine.store('auth');
+            if (!store) return;
+            const signedOut = type === 'manifest:auth:logout' || type === 'manifest:auth:session-cleared';
+            if (signedOut || (store._startTeamUserId && store._startTeamUserId !== store.user?.$id)) {
+                store.startTeamId = null;
+                store._startTeamUserId = null;
+            }
+        }));
 
     // Unverified session: recheck on reconnect, on return to the tab, and on a bounded backoff
     const RECHECK_DELAYS_MS = [2000, 5000, 15000, 60000];
@@ -174,6 +185,7 @@ function initializeAuthStore() {
         teams: [], // List of user's teams
         currentTeam: null, // Currently selected/active team
         startTeamId: null, // App-chosen team to start on when the teams first load (used if the user has it)
+        _startTeamUserId: null, // user the startTeamId was first used for
         _teamsPollInterval: null, // Interval ID for teams polling (deprecated, use realtime instead)
         _teamsRealtimeUnsubscribe: null, // Realtime subscription cleanup function (may be array of unsubscribes)
         _teamsRealtimeSubscribing: false, // Flag to prevent recursive subscription during refresh
@@ -643,6 +655,7 @@ function initializeAuthStore() {
 
         // Team to start on: the app's startTeamId, else the remembered one, if this user still has it
         _startTeam(cfg, teams) {
+            if (this.startTeamId && !this._startTeamUserId) this._startTeamUserId = this.user?.$id || null;
             const remembered = this.isAnonymous ? null : this._rememberedTeamId(cfg, this.user?.$id);
             for (const id of [this.startTeamId, remembered]) {
                 const team = id && (teams || []).find(t => t.$id === id);
