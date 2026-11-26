@@ -429,11 +429,13 @@ export interface ManifestVirtualScrollOptions {
     offset?: number;
 }
 
-/** A virtual list's scrolling API. Each call resolves with the item's row element as soon as the item is in
- *  place; the list then keeps it there while rows around it finish sizing (until nothing has changed for
- *  400 ms, at most 3 s). It resolves null when there is no such item, a later different call supersedes it,
- *  the list is scrolled some other way (the person, keys, other code) before the item is in place, or the
- *  item leaves the list. The same call again while one is running joins it. */
+/** A virtual list's scrolling API. Each call resolves with the item's row element once the row is at the
+ *  requested alignment (within 1px); the list then keeps it there while rows around it finish sizing (until
+ *  nothing has changed for 400 ms, at most 3 s). If sizes keep changing it resolves after about 90 frames,
+ *  as close as it got. In a scroll-snap list it jumps once (smooth is instant there) and resolves when the
+ *  row is at least partly visible. It resolves null when there is no such item, a later different call
+ *  supersedes it, the list is scrolled some other way before the row is in place, or the item leaves the
+ *  list. The same call again while one is running joins it. */
 export interface ManifestVirtualList {
     scrollToIndex(index: number | string, options?: ManifestVirtualScrollOptions): Promise<HTMLElement | null>;
     scrollToKey(key: unknown, options?: ManifestVirtualScrollOptions): Promise<HTMLElement | null>;
