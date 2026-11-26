@@ -461,9 +461,10 @@ function initializeVirtualPlugin() {
                 indices.push(i);
             }
             const free = recycle ? new Map() : null;   // leaving row node -> [old key, entry], for rows entering this pass
+            const ctxHosts = free && window.__mnfstContextHosts ? window.__mnfstContextHosts() : null;   // open x-dropdown.context triggers
             for (const [key, entry] of rendered) {
                 if (!visible.has(key)) {
-                    if (free && reusable(entry)) { free.set(entry.node, [key, entry]); rendered.delete(key); }
+                    if (free && reusable(entry, ctxHosts)) { free.set(entry.node, [key, entry]); rendered.delete(key); }
                     else removeRow(key, entry);
                 }
             }
@@ -529,8 +530,9 @@ function initializeVirtualPlugin() {
 
         // Recycle: a leaving row is handed on unless it (or content it teleported) holds focus or something open,
         // or it cannot move as one node (a <template> root renders its rows beside it)
-        function reusable(entry) {
+        function reusable(entry, ctxHosts) {
             const n = entry.node;
+            if (ctxHosts) for (const h of ctxHosts) if (n.contains(h)) return false;
             if (n.tagName === 'TEMPLATE' || n.parentNode !== host) return false;
             const a = document.activeElement;
             if (a && a !== document.body && n.contains(a)) return false;

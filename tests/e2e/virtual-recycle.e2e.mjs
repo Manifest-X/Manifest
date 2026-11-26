@@ -139,6 +139,9 @@ const EXTRA_PAGES = {
     hooksaw: (r) => extraList(r, '', { rowAttrs: '@manifest:virtual-recycle="$el.dataset.saw = $el.querySelector(\'.name\').textContent + \'|\' + $el.dataset.n"' }),
     // An author's own aria-expanded (no aria-controls/popovertarget) is row data, not an open trigger
     expanded: (r) => extraList(r, '<span class="ex" :aria-expanded="row.ex ? \'true\' : \'false\'" x-text="row.ex ? \'expanded\' : \'collapsed\'"></span>'),
+    // Context menus outside the list (manual popovers): a row hosting an open one is busy
+    ctx: (r) => extraList(r, '', { rowAttrs: 'x-dropdown.context="ctxmenu"', scripts: DROPDOWNS, after: '<menu id="ctxmenu"><li class="ci">act</li></menu>' }),
+    ctxdyn: (r) => extraList(r, '', { rowAttrs: 'x-dropdown.context="`ctx-${row.slot % 2}`"', scripts: DROPDOWNS, after: '<menu id="ctx-0"><li>c0</li></menu><menu id="ctx-1"><li>c1</li></menu>' }),
     initnested: (r) => extraList(r, '<em x-init="$el.dataset.born = row.name" @manifest:virtual-recycle="$el.dataset.born = row.name">i</em>'),
     initmod: (r) => extraList(r, '', { rowAttrs: 'x-init.once="$el.dataset.born = row.name"' }),
     init: (r) => extraList(r, '<em x-init="$el.dataset.born = row.name">i</em>'),
@@ -435,6 +438,7 @@ async function main() {
         }
 
         // 8. Review follow-ups
+        const settle = (p) => p.evaluate(() => new Promise((r) => setTimeout(() => setTimeout(r, 30), 30)))
         const openExtra = async (page, r) => {
             const p = await browser.newPage()
             p.errors = []; p.warns = []
@@ -594,6 +598,69 @@ async function main() {
             const p = await openExtra(page, 1)
             check(p.warns.length === 1 && /x-init/.test(p.warns[0]), `x-init warning: ${page === 'initnested' ? 'a recycle handler on a nested element does not silence it' : 'x-init.once counts as x-init'}`, p.warns)
             await done(p, `x-init warning ${page}`)
+        }
+
+        // x-dropdown.context with its menu outside the list: the hosting row is busy while the menu is open
+        {
+            const hosting = (p) => p.evaluate(() => { const r = window.__ctxRow; return { open: [...document.querySelectorAll(':popover-open')].map((m) => m.id), hosts: (window.__mnfstContextHosts?.() || []).length, busy: (window.__mnfstContextHosts?.() || []).some((h) => r.contains(h)) } })
+            const pick = (p, k = 5) => p.evaluate(async (k) => { await T.go(3000); const r = T.rows()[k]; window.__ctxRow = r; return r.dataset.n }, k)
+            for (const r of [1, 0]) {
+                const p = await openExtra('ctx', r)
+                const n = await pick(p)
+                await p.click(`#v .r[data-n="${n}"]`, { button: 'right' }); await settle(p)
+                const before = await hosting(p)
+                const res = await p.evaluate(async () => { await T.go(3000 + 18000); await frames_(2); return { connected: window.__ctxRow.isConnected, open: [...document.querySelectorAll(':popover-open')].map((m) => m.id), hosts: (window.__mnfstContextHosts?.() || []).length, errs: T.check().errs } })
+                check(before.open[0] === 'ctxmenu' && before.busy && !res.connected && res.open.length === 0 && res.hosts === 0 && res.errs.length === 0, `x-dropdown.context, recycle ${r ? 'on' : 'off'}: scrolling away destroys the hosting row and closes its menu`, { before, res })
+                await done(p, `x-dropdown.context scroll away, recycle ${r ? 'on' : 'off'}`)
+            }
+            // Every close path clears the busy state; the row then recycles normally
+            const paths = {
+                escape: async (p) => { await p.keyboard.press('Escape') },
+                outside: async (p) => { await p.mouse.click(700, 500) },
+                item: async (p) => { await p.click('#ctxmenu .ci') },
+                another: async (p, other) => { await p.click(`#v .r[data-n="${other}"]`, { button: 'right' }) },
+            }
+            for (const [name, close] of Object.entries(paths)) {
+                const p = await openExtra('ctx', 1)
+                const n = await pick(p)
+                const other = await p.evaluate(() => T.rows()[7].dataset.n)
+                await p.click(`#v .r[data-n="${n}"]`, { button: 'right' }); await settle(p)
+                const before = await hosting(p)
+                await close(p, other); await settle(p)
+                const after = await hosting(p)
+                const res = await p.evaluate(async () => { const m0 = window.__mixed, was = window.__ctxRow.dataset.n; await T.go(3000 + 18000); return { reused: window.__ctxRow.isConnected && window.__ctxRow.dataset.n !== was, mixed: window.__mixed - m0, errs: T.check().errs } })
+                const cleared = name === 'another' ? after.hosts > 0 && !after.busy : after.hosts === 0 && after.open.length === 0
+                check(before.busy && cleared && res.reused && res.errs.length === 0, `x-dropdown.context close path "${name}": the busy state clears and the row recycles again`, { before, after, res })
+                await done(p, `x-dropdown.context close ${name}`)
+            }
+            // Long-press (touch) opens through the same path
+            {
+                const p = await openExtra('ctx', 1)
+                await pick(p)
+                const res = await p.evaluate(async () => {
+                    const r = window.__ctxRow, b = r.getBoundingClientRect()
+                    r.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch', clientX: b.left + 5, clientY: b.top + 5 }))
+                    await new Promise((res) => setTimeout(res, 650))
+                    const busy = (window.__mnfstContextHosts?.() || []).some((h) => r.contains(h))
+                    r.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch' }))
+                    await T.go(3000 + 18000)
+                    return { busy, connected: r.isConnected, open: document.querySelectorAll(':popover-open').length }
+                })
+                check(res.busy && !res.connected && res.open === 0, 'x-dropdown.context long-press: the hosting row is busy, then destroyed with its menu closed', res)
+                await done(p, 'x-dropdown.context long-press')
+            }
+            // Re-point closes the menu and clears the busy state
+            {
+                const p = await openExtra('ctxdyn', 1)
+                const n = await pick(p)
+                await p.click(`#v .r[data-n="${n}"]`, { button: 'right' }); await settle(p)
+                const before = await hosting(p)
+                await p.evaluate(() => { T.data().items[+window.__ctxRow.dataset.i].slot++ }); await settle(p)
+                const after = await hosting(p)
+                const res = await p.evaluate(async () => { const was = window.__ctxRow.dataset.n; await T.go(3000 + 18000); return { reused: window.__ctxRow.isConnected && window.__ctxRow.dataset.n !== was } })
+                check(before.busy && after.hosts === 0 && after.open.length === 0 && res.reused, 'x-dropdown.context re-point: the menu closes, the busy state clears, the row recycles again', { before, after, res })
+                await done(p, 'x-dropdown.context re-point')
+            }
         }
 
         // x-transition in rows: recycle stays off for the list, with one warning; x-init without the hook warns once
