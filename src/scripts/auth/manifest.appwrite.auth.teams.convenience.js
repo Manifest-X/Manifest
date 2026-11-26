@@ -41,6 +41,7 @@ function initializeTeamsConvenience() {
 
                 const teamId = this.currentTeam.$id;
                 const memberships = this.currentTeamMemberships;
+                const own = this._currentMembership ? this._currentMembership() : null;
                 const permissions = ['inviteMembers', 'updateMembers', 'removeMembers', 'renameTeam', 'deleteTeam', 'manageRoles'];
 
                 // Computed first, written only if the team and its members are unchanged (a newer refresh owns them otherwise)
@@ -76,7 +77,8 @@ function initializeTeamsConvenience() {
                 // Per-team roles are correct for their key either way
                 if (!this._allRolesCacheByTeam) this._allRolesCacheByTeam = {};
                 this._allRolesCacheByTeam[teamId] = { ...rolesCopy };
-                if (this.currentTeam?.$id !== teamId || !sameMembers(memberships, this.currentTeamMemberships)) return;
+                if (this.currentTeam?.$id !== teamId || !sameMembers(memberships, this.currentTeamMemberships)
+                    || (this._currentMembership ? this._currentMembership() : null) !== own) return;
                 this._permissionCache = permissionCache;
                 this._userRoleCache = userRole;
                 this._allRolesCache = rolesCopy;
@@ -268,9 +270,9 @@ function initializeTeamsConvenience() {
                     }
 
                     // Verify this is the current user's membership
-                    const isCurrentUser = this.user && this.currentTeamMemberships?.some(
+                    const isCurrentUser = !!this.user && (this.currentTeamMemberships?.some(
                         m => m.$id === membershipId && m.userId === this.user.$id
-                    );
+                    ) || (this.currentTeam?.$id === teamId && this._currentMembership?.()?.$id === membershipId));
 
                     if (!isCurrentUser) {
                         return { success: false, error: 'You can only leave teams you are a member of' };
@@ -326,13 +328,8 @@ function initializeTeamsConvenience() {
 
                 // Check if current user is an owner of the current team
                 store.isCurrentTeamOwner = function () {
-                    if (!this.currentTeam || !this.currentTeamMemberships || !this.user) {
-                        return false;
-                    }
-                    const userMembership = this.currentTeamMemberships.find(
-                        m => m.userId === this.user.$id
-                    );
-                    return userMembership && userMembership.roles && userMembership.roles.includes('owner');
+                    const userMembership = this._currentMembership ? this._currentMembership() : null;
+                    return !!(userMembership && userMembership.roles && userMembership.roles.includes('owner'));
                 };
 
                 // Check if a team can be deleted (checks both immutable status and permissions)
@@ -738,12 +735,7 @@ function initializeTeamsConvenience() {
 
                 // Get current user's roles in the current team
                 store.getCurrentTeamRoles = function () {
-                    if (!this.currentTeam || !this.currentTeamMemberships || !this.user) {
-                        return [];
-                    }
-                    const userMembership = this.currentTeamMemberships.find(
-                        m => m.userId === this.user.$id
-                    );
+                    const userMembership = this._currentMembership ? this._currentMembership() : null;
                     const raw = userMembership?.roles || [];
                     // Membership tokens are Appwrite-safe slugs; translate them back to the
                     // author's display names using the cached role map. "owner" and unknown
@@ -762,7 +754,8 @@ function initializeTeamsConvenience() {
                 // Check if current user has a specific permission in the current team
                 // Uses role abstraction layer to check permissions based on custom roles
                 store.hasTeamPermission = async function (permission) {
-                    if (!this.currentTeam || !this.currentTeamMemberships || !this.user) {
+                    // No membership found for the current user: no permissions
+                    if (!this.currentTeam || !this.user || !this._currentMembership?.()) {
                         return false;
                     }
 
@@ -779,7 +772,7 @@ function initializeTeamsConvenience() {
                 // Sync version for Alpine bindings. Resolves from cached allTeamRoles so it
                 // matches async hasTeamPermission, including custom (non-built-in) keys.
                 store.hasTeamPermissionSync = function (permission) {
-                    if (!this.currentTeam || !this.currentTeamMemberships || !this.user) {
+                    if (!this.currentTeam || !this.user || !this._currentMembership?.()) {
                         return false;
                     }
 
@@ -797,10 +790,10 @@ function initializeTeamsConvenience() {
                         return userRoles.includes('owner');
                     }
 
-                    // User holds no custom role (only "owner" / empty) → all permissions.
+                    // Only Appwrite's owner role, no custom role → all permissions
                     const customRoles = userRoles.filter(role => role !== 'owner');
                     if (customRoles.length === 0) {
-                        return true;
+                        return userRoles.includes('owner');
                     }
 
                     // Granted if any of the user's custom roles includes this permission

@@ -201,6 +201,7 @@ function initializeAuthStore() {
         inviteEmail: '',
         inviteRoles: [], // Array of selected roles for checkboxes
         currentTeamMemberships: [],
+        _ownMembership: null, // { teamId, userId, membership } when the listed page lacks the current user
         deletedTemplateTeams: [],
         deletedTemplateRoles: [], // Deleted template roles (can be reapplied)
         _teamImmutableCache: {},
@@ -572,6 +573,41 @@ function initializeAuthStore() {
             return { userId: hint.userId, authEpoch: this._authEpoch, teamsEpoch: this._teamsEpoch, request, used: false };
         },
 
+        // The current user's membership in the current team, from the listed page or fetched on its own; null means none (no permissions)
+        _currentMembership() {
+            const teamId = this.currentTeam?.$id;
+            const userId = this.user?.$id;
+            if (!teamId || !userId) return null;
+            const listed = (this.currentTeamMemberships || []).find(m => m.userId === userId && (!m.teamId || m.teamId === teamId));
+            if (listed) return listed;
+            const own = this._ownMembership;
+            return own && own.teamId === teamId && own.userId === userId ? own.membership : null;
+        },
+
+        // After a page of the current team's members: when it lacks the current user but more members exist, fetch theirs directly
+        async _resolveOwnMembership(teamId, page, total, keepKnown) {
+            const userId = this.user?.$id;
+            if (!userId || !this._appwrite?.teams) return;
+            if (page.some(m => m.userId === userId)) return;
+            const known = this._ownMembership;
+            if (keepKnown && known && known.teamId === teamId && known.userId === userId) return;
+            let membership = null;
+            if (total > page.length) {
+                const Query = window.Appwrite?.Query;
+                try {
+                    if (Query?.equal) {
+                        const queries = [Query.equal('userId', [userId]), ...(Query.limit ? [Query.limit(1)] : [])];
+                        const result = await this._appwrite.teams.listMemberships({ teamId, queries });
+                        membership = (result?.memberships || []).find(m => m.userId === userId) || null;
+                    }
+                } catch (e) {
+                    membership = null;
+                }
+            }
+            if (this.currentTeam?.$id !== teamId || this.user?.$id !== userId) return;
+            this._ownMembership = { teamId, userId, membership };
+        },
+
         // Offline-booted tab: re-run the session check once Appwrite is reachable
         async _recheckSession() {
             if (!this._sessionUnverified || this._rechecking || !this._appwrite) return;
@@ -621,6 +657,7 @@ function initializeAuthStore() {
             this.teams = [];
             this.currentTeam = null;
             this.currentTeamMemberships = [];
+            this._ownMembership = null;
             this.deletedTemplateTeams = [];
             this.deletedTemplateRoles = [];
             this._teamImmutableCache = {};
