@@ -285,8 +285,8 @@ function initializeTeamsUserRoles() {
                     // Update all memberships that have the old role name to use the new role name
                     // This prevents data drift where role names in memberships don't match role definitions
                     try {
-                        if (this.listMemberships) {
-                            const membershipsResult = await this.listMemberships(teamId);
+                        if (this._listAllMemberships) {
+                            const membershipsResult = await this._listAllMemberships(teamId);
                             if (membershipsResult && membershipsResult.success && membershipsResult.memberships) {
                                 const memberships = membershipsResult.memberships;
                                 let updatedCount = 0;
@@ -381,20 +381,20 @@ function initializeTeamsUserRoles() {
 
                 try {
                     // Check if role is assigned to any members (UI/platform requirement)
-                    if (this.listMemberships) {
-                        const membershipsResult = await this.listMemberships(teamId);
-                        if (membershipsResult.success) {
-                            const memberships = membershipsResult.memberships || [];
-                            const roleInUse = memberships.some(m =>
-                                m.roles && Array.isArray(m.roles) && m.roles.includes(roleName)
-                            );
-
-                            if (roleInUse) {
-                                return {
-                                    success: false,
-                                    error: `Cannot delete role "${roleName}" - it is assigned to one or more team members. Please reassign members to other roles first.`
-                                };
-                            }
+                    if (this._listAllMemberships) {
+                        // Every member is checked; if they cannot all be read, the role is kept
+                        const membershipsResult = await this._listAllMemberships(teamId);
+                        if (!membershipsResult.success) {
+                            return { success: false, error: `Could not check whether role "${roleName}" is assigned: ${membershipsResult.error}` };
+                        }
+                        const roleInUse = (membershipsResult.memberships || []).some(m =>
+                            m.roles && Array.isArray(m.roles) && m.roles.includes(roleName)
+                        );
+                        if (roleInUse) {
+                            return {
+                                success: false,
+                                error: `Cannot delete role "${roleName}" - it is assigned to one or more team members. Please reassign members to other roles first.`
+                            };
                         }
                     }
 

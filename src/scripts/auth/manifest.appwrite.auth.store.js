@@ -608,6 +608,29 @@ function initializeAuthStore() {
             };
         },
 
+        // Every member of a team, 100 per page, for internal checks and copies: never shown, and it leaves the
+        // current team's list and own membership alone (those follow their own listings)
+        async _listAllMemberships(teamId) {
+            if (!this._appwrite?.teams) return { success: false, error: 'Appwrite not configured' };
+            const Query = window.Appwrite?.Query;
+            if (!Query?.limit || !Query?.cursorAfter) return { success: false, error: 'Appwrite Query is not available' };
+            const memberships = [];
+            try {
+                let cursor = null;
+                for (let page = 0; page < 10000; page++) {
+                    const queries = [Query.limit(100), ...(cursor ? [Query.cursorAfter(cursor)] : [])];
+                    const result = await this._appwrite.teams.listMemberships({ teamId, queries });
+                    const rows = result?.memberships || [];
+                    memberships.push(...rows);
+                    if (rows.length < 100) break;
+                    cursor = rows[rows.length - 1].$id;
+                }
+                return { success: true, memberships, total: memberships.length };
+            } catch (error) {
+                return { success: false, error: error?.message || String(error) };
+            }
+        },
+
         // Queries for a member listing that brings none of its own (auth.teams.memberLimit)
         _memberQueries(cfg) {
             return cfg?.memberLimit && window.Appwrite?.Query?.limit ? [window.Appwrite.Query.limit(cfg.memberLimit)] : [];

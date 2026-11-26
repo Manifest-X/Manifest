@@ -130,7 +130,7 @@ export function boot({ cfg, responder, persisted = null, search = '', realtime =
     for (const type of ['initialized', 'teams-loaded', 'login', 'logout', 'anonymous', 'session-cleared']) {
         target.addEventListener(`manifest:auth:${type}`, () => events.push({ type, store: stores.auth && snapshot(stores.auth) }))
     }
-    ctx.Appwrite = { Query: { limit: n => JSON.stringify({ method: 'limit', values: [n] }), equal: (attr, values) => JSON.stringify({ method: 'equal', attribute: attr, values }) } }
+    ctx.Appwrite = { Query: { limit: n => JSON.stringify({ method: 'limit', values: [n] }), equal: (attr, values) => JSON.stringify({ method: 'equal', attribute: attr, values }), cursorAfter: id => JSON.stringify({ method: 'cursorAfter', values: [id] }) } }
     if (data) {
         ctx.Appwrite = {
             ...ctx.Appwrite,

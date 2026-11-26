@@ -545,9 +545,9 @@ function initializeTeamsCore() {
                 try {
                     // Create new team with same roles as creator (if copyRoles is true)
                     let creatorRoles = [];
-                    if (copyRoles && this.listMemberships) {
+                    if (copyRoles && this._listAllMemberships) {
                         // Get memberships to find creator's roles
-                        const membershipsResult = await this.listMemberships(teamId);
+                        const membershipsResult = await this._listAllMemberships(teamId);
                         if (membershipsResult.success && membershipsResult.memberships) {
                             // Find current user's membership
                             const currentUserMembership = membershipsResult.memberships.find(
@@ -571,8 +571,8 @@ function initializeTeamsCore() {
                     const newTeamId = newTeam.$id;
 
                     // Copy members if requested
-                    if (copyMembers && this.listMemberships) {
-                        const membershipsResult = await this.listMemberships(teamId);
+                    if (copyMembers && this._listAllMemberships) {
+                        const membershipsResult = await this._listAllMemberships(teamId);
                         if (membershipsResult.success && membershipsResult.memberships) {
                             // Get all memberships (excluding current user, who is already creator)
                             const otherMemberships = membershipsResult.memberships.filter(
@@ -587,8 +587,9 @@ function initializeTeamsCore() {
                                         : (membership.roles ? [membership.roles] : ['owner']);
 
                                     // Use email if available, otherwise userId
-                                    if (membership.email) {
-                                        await this.inviteMember(newTeamId, roles, membership.email);
+                                    const email = membership.email || membership.userEmail;
+                                    if (email) {
+                                        await this.inviteMember(newTeamId, roles, email);
                                     } else if (membership.userId) {
                                         await this.inviteMember(newTeamId, roles, null, membership.userId);
                                     }
