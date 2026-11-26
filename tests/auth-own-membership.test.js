@@ -117,7 +117,7 @@ describe('own membership outside the listed page', () => {
         p.fake.calls.find(c => !c.settled && c.args[0]?.queries?.length).resolve({ memberships: [p.teams.t1[29]], total: 1 })
         await sleep(50)
         expect(p.store.currentTeam.$id).toBe('t2')
-        expect(p.store._ownMembership?.teamId).not.toBe('t2')
+        expect(p.store._ownMembership).toMatchObject({ teamId: 't2', membership: { $id: 't2-me' } }) // t2's own entry, never t1's late answer
         expect(perms(p.store)).toEqual({ ...NONE, inviteMembers: true, manageRoles: true })
         expect(p.store._userRoleCache).toBe('Admin')
     })
@@ -145,12 +145,12 @@ describe('own membership outside the listed page', () => {
         expect(memberCalls(p)).toEqual(['t1:page', 't1:own'])
     })
 
-    it('an app paging with its own queries keeps the known own membership without refetching', async () => {
+    it('an app paging with its own queries re-fetches the own membership and keeps the role', async () => {
         const p = start({ t1Roles: ['owner'] })
         await loaded(p)
         const before = memberCalls(p).length
         await p.store.listMemberships('t1', ['cursor-page-2'])
-        expect(memberCalls(p).length).toBe(before + 1)
+        expect(memberCalls(p).slice(before)).toEqual(['t1:page', 't1:own'])
         expect(p.store.hasTeamPermissionSync('deleteTeam')).toBe(true)
     })
 
@@ -198,5 +198,180 @@ describe('$auth.currentTeamMembership', () => {
         await loaded(p)
         expect(p.store.currentTeamMembership).toBe(null)
         expect(perms(p.store)).toEqual(NONE)
+    })
+})
+
+// A server model: mutable roles and position, search, limit and the own lookup
+function serverStart({ index = 29, roles = ['Admin', 'owner'], hold = () => false, fail = () => false, realtime = false, wait, retryMs } = {}) {
+    const srv = { index, roles, ownCalls: 0 }
+    const members = () => Array.from({ length: 30 }, (_, i) => i === srv.index
+        ? { $id: 't1-me', teamId: 't1', userId: 'uA', roles: srv.roles, confirm: true }
+        : { $id: `t1-m${i}`, teamId: 't1', userId: `u${i}`, roles: ['Viewer'], confirm: true })
+    const t2 = [{ $id: 't2-me', teamId: 't2', userId: 'uA', roles: ['Viewer'], confirm: true }]
+    const p = boot({
+        cfg, persisted, realtime,
+        responder: (name, arg, entry) => {
+            if (name === 'account.get') return user
+            if (name === 'account.listSessions') return { sessions: [{ $id: 's1', current: true, provider: 'email' }] }
+            if (name === 'account.deleteSession') return {}
+            if (name === 'teams.list') return { teams: [{ $id: 't1', name: 'One' }, { $id: 't2', name: 'Two' }], total: 2 }
+            if (name === 'teams.getPrefs') return {}
+            if (name !== 'teams.listMemberships') return undefined
+            const queries = arg.queries || []
+            const own = queries.some(q => q.includes('"equal"'))
+            if (own) srv.ownCalls++
+            if (hold(arg, own)) return undefined
+            if (fail(arg, own)) return offline()
+            const all = arg.teamId === 't2' ? t2 : members()
+            if (own) return { memberships: all.filter(m => m.userId === 'uA'), total: 1 }
+            const matching = arg.search ? all.filter(m => m.userId.includes(arg.search)) : all
+            const limitQ = queries.map(q => { try { return JSON.parse(q) } catch { return null } }).find(q => q?.method === 'limit')
+            return { memberships: matching.slice(0, limitQ ? limitQ.values[0] : PAGE), total: matching.length }
+        },
+    })
+    if (wait) p.store._prefetchWaitMs = wait
+    if (retryMs) p.store._ownRetryMs = retryMs
+    return { ...p, srv }
+}
+const limit = n => JSON.stringify({ method: 'limit', values: [n] })
+const ADMIN = { ...NONE, inviteMembers: true, manageRoles: true }
+const pendingOwn = p => p.fake.calls.find(c => !c.settled && c.args[0]?.queries?.some(q => q.includes('"equal"')))
+
+describe('own membership freshness', () => {
+    it('demoted and now on the first page, then a page without the user: the stale Admin never returns', async () => {
+        const p = serverStart()
+        await loaded(p)
+        expect(perms(p.store)).toEqual(ADMIN)
+        Object.assign(p.srv, { index: 10, roles: ['Viewer'] })
+        await p.store.viewTeam(p.store.teams[0])
+        expect(perms(p.store)).toEqual(NONE)
+        const page = p.store.listMemberships('t1', [limit(5)])
+        await sleep(5)
+        expect(p.store.hasTeamPermissionSync('inviteMembers')).toBe(false)
+        await page
+        expect(p.store.hasTeamPermissionSync('inviteMembers')).toBe(false)
+        expect(p.store.currentTeamMembership.roles).toEqual(['Viewer'])
+    })
+
+    it('a page without the user re-fetches; the known (fresh) membership is used meanwhile', async () => {
+        let hold = false
+        const p = serverStart({ index: 10, roles: ['Viewer'], hold: (a, own) => own && hold })
+        await loaded(p)
+        hold = true
+        const page = p.store.listMemberships('t1', [limit(5)])
+        await until(() => !!pendingOwn(p))
+        expect(p.store.hasTeamPermissionSync('inviteMembers')).toBe(false)
+        expect(p.store.currentTeamMembership.roles).toEqual(['Viewer'])
+        pendingOwn(p).resolve({ memberships: [{ $id: 't1-me', teamId: 't1', userId: 'uA', roles: ['Viewer'], confirm: true }], total: 1 })
+        await page
+        expect(perms(p.store)).toEqual(NONE)
+    })
+
+    it('demotion while outside the page: the realtime re-list re-fetches and roles drop', async () => {
+        const p = serverStart({ realtime: true })
+        await loaded(p)
+        await until(() => !!p.fake.channels.memberships)
+        expect(perms(p.store)).toEqual(ADMIN)
+        p.srv.roles = ['Viewer']
+        p.fake.emit('memberships', { events: ['teams.t1.memberships.t1-me.update'], payload: { teamId: 't1' } })
+        await until(() => p.store._permissionCache.inviteMembers === false)
+        expect(perms(p.store)).toEqual(NONE)
+        expect(p.store.currentTeamMembership.roles).toEqual(['Viewer'])
+    })
+
+    it('promotion while outside the page: roles rise after the re-list', async () => {
+        const p = serverStart({ roles: ['Viewer'], realtime: true })
+        await loaded(p)
+        await until(() => !!p.fake.channels.memberships)
+        expect(perms(p.store)).toEqual(NONE)
+        p.srv.roles = ['Admin', 'owner']
+        p.fake.emit('memberships', { events: ['teams.t1.memberships.t1-me.update'], payload: { teamId: 't1' } })
+        await until(() => p.store._permissionCache.inviteMembers === true)
+        expect(perms(p.store)).toEqual(ADMIN)
+    })
+
+    it('a member search by an Admin inside the page keeps Admin', async () => {
+        const p = serverStart({ index: 3 })
+        await loaded(p)
+        const before = p.srv.ownCalls
+        await p.store.listMemberships('t1', [], 'u1')
+        expect(p.store.currentTeamMemberships.every(m => m.userId.includes('u1'))).toBe(true)
+        expect(perms(p.store)).toEqual(ADMIN)
+        expect(p.store.currentTeamMembership.roles).toEqual(['Admin', 'owner'])
+        expect(p.srv.ownCalls - before).toBe(1)
+    })
+
+    it('a member search by an Admin outside the page keeps Admin', async () => {
+        const p = serverStart()
+        await loaded(p)
+        await p.store.listMemberships('t1', [], 'u1')
+        expect(perms(p.store)).toEqual(ADMIN)
+    })
+
+    it('a paged listing by a Viewer outside the page keeps Viewer and never elevates', async () => {
+        const p = serverStart({ roles: ['Viewer'] })
+        await loaded(p)
+        const seen = []
+        let done = false
+        const page = p.store.listMemberships('t1', [limit(5)]).then(() => { done = true })
+        while (!done) { seen.push(p.store.hasTeamPermissionSync('deleteTeam')); await sleep(1) }
+        await page
+        expect(seen.length).toBeGreaterThan(0)
+        expect(seen.every(v => v === false)).toBe(true)
+        expect(perms(p.store)).toEqual(NONE)
+    })
+})
+
+describe('a hung or failed own-membership fetch', () => {
+    it('hung: the load finishes after the bounded wait with everything denied; a late answer for the right team applies', async () => {
+        const p = serverStart({ hold: (a, own) => own, wait: 150 })
+        await loaded(p)
+        expect(perms(p.store)).toEqual(NONE)
+        expect(p.store.currentTeamMembership).toBe(null)
+        pendingOwn(p).resolve({ memberships: [{ $id: 't1-me', teamId: 't1', userId: 'uA', roles: ['Admin', 'owner'], confirm: true }], total: 1 })
+        await until(() => p.store._permissionCache.inviteMembers === true)
+        expect(perms(p.store)).toEqual(ADMIN)
+    })
+
+    it('hung: a late answer after switching team is not applied', async () => {
+        const p = serverStart({ hold: (a, own) => own && a.teamId === 't1', wait: 150 })
+        await loaded(p)
+        await p.store.viewTeam(p.store.teams[1])
+        pendingOwn(p).resolve({ memberships: [{ $id: 't1-me', teamId: 't1', userId: 'uA', roles: ['owner'], confirm: true }], total: 1 })
+        await sleep(30)
+        expect(p.store.currentTeam.$id).toBe('t2')
+        expect(p.store.currentTeamMembership.$id).toBe('t2-me')
+        expect(perms(p.store)).toEqual(NONE)
+    })
+
+    it('failed: denied, then one delayed retry recovers without the app doing anything', async () => {
+        let failures = 1
+        const p = serverStart({ fail: (a, own) => own && failures-- > 0, retryMs: 100 })
+        await loaded(p)
+        expect(perms(p.store)).toEqual(NONE)
+        await until(() => p.store._permissionCache.inviteMembers === true, 2000)
+        expect(perms(p.store)).toEqual(ADMIN)
+        expect(p.srv.ownCalls).toBe(2)
+    })
+
+    it('failed twice: one retry only, then the next listing tries again', async () => {
+        let failures = 2
+        const p = serverStart({ fail: (a, own) => own && failures-- > 0, retryMs: 50 })
+        await loaded(p)
+        await sleep(200)
+        expect(p.srv.ownCalls).toBe(2)
+        expect(perms(p.store)).toEqual(NONE)
+        await p.store.viewTeam(p.store.teams[0])
+        expect(perms(p.store)).toEqual(ADMIN)
+    })
+
+    it('logout cancels a pending retry', async () => {
+        let failures = 1
+        const p = serverStart({ fail: (a, own) => own && failures-- > 0, retryMs: 80 })
+        await loaded(p)
+        await p.store.logout()
+        await sleep(150)
+        expect(p.srv.ownCalls).toBe(1)
+        expect(p.store._ownRetryTimer).toBe(null)
     })
 })

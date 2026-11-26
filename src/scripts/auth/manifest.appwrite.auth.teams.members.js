@@ -243,7 +243,7 @@ function initializeTeamsMembers() {
 
                     // Roles come from the user's own membership, even when this page does not include it
                     if (this.currentTeam?.$id === teamId && this._resolveOwnMembership) {
-                        await this._resolveOwnMembership(teamId, memberships, result.total || 0, ownQueries);
+                        await this._resolveOwnMembership(teamId, memberships, result.total || 0, ownQueries || !!params.search);
                     }
 
                     // Update currentTeamMemberships if this is the current team
