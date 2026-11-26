@@ -102,7 +102,7 @@ function initializeTeamsCore() {
             };
 
             // List user's teams
-            store.listTeams = async function (queries = [], search = '') {
+            store.listTeams = async function (queries = [], search = '', { prefetched = null } = {}) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
                 }
@@ -128,7 +128,16 @@ function initializeTeamsCore() {
                     if (search && search.trim().length > 0) {
                         params.search = search;
                     }
-                    const result = await this._appwrite.teams.list(params);
+                    // Boot prefetch: only for this identity and epoch, once; a failed or superseded one falls through to a fresh list
+                    let result = null;
+                    if (prefetched && !prefetched.used && Array.isArray(queries) && queries.length === 0 && !params.search
+                        && prefetched.userId === owner && prefetched.teamsEpoch === generation && prefetched.authEpoch === this._authEpoch) {
+                        prefetched.used = true;
+                        const early = await prefetched.request;
+                        if (stale()) return discarded;
+                        if (!early.error && early.value && prefetched.authEpoch === this._authEpoch) result = early.value;
+                    }
+                    if (!result) result = await this._appwrite.teams.list(params);
                     if (stale()) return discarded;
 
                     // Update store with teams
