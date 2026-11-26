@@ -234,6 +234,7 @@ function initializeAuthStore() {
         _allRolesCacheByTeam: {}, // Cache roles per team ID
         _rolePermanentCache: {}, // Cache permanent role status per team: { teamId: { roleName: true/false } }
         _userGeneratedRolesCache: {},
+        _permissionRefresh: null, // last finished permission refresh: { seq, teamId, memberships }
 
         // Permission cache methods (always available, return safe defaults)
         canInviteMembers() {

@@ -751,6 +751,7 @@ function initializeAuthStore() {
         _allRolesCacheByTeam: {}, // Cache roles per team ID
         _rolePermanentCache: {}, // Cache permanent role status per team: { teamId: { roleName: true/false } }
         _userGeneratedRolesCache: {},
+        _permissionRefresh: null, // last finished permission refresh: { seq, teamId, memberships }
 
         // Permission cache methods (always available, return safe defaults)
         canInviteMembers() {
@@ -5264,6 +5265,7 @@ function initializeTeamsConvenience() {
                 }
 
                 const teamId = this.currentTeam.$id;
+                const memberships = this.currentTeamMemberships;
                 const permissions = ['inviteMembers', 'updateMembers', 'removeMembers', 'renameTeam', 'deleteTeam', 'manageRoles'];
 
                 // Cache permissions
@@ -5315,7 +5317,10 @@ function initializeTeamsConvenience() {
                     if (!this._allRolesCacheByTeam) this._allRolesCacheByTeam = {};
                     this._allRolesCacheByTeam[teamId] = {};
                 }
+                this._permissionRefresh = { seq: (this._permissionRefresh?.seq || 0) + 1, teamId, memberships };
             };
+
+            const sameMembers = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((m, i) => m === b[i]);
 
             // Public method to refresh permission cache
             if (!store.refreshPermissionCache) {
@@ -6087,9 +6092,13 @@ function initializeTeamsConvenience() {
             if (store.viewTeam && !store._viewTeamWrapped) {
                 const originalViewTeam = store.viewTeam;
                 store.viewTeam = async function (team) {
+                    const before = this._permissionRefresh?.seq || 0;
                     const result = await originalViewTeam.call(this, team);
-                    // Update cache after viewing team (which loads memberships)
-                    if (updatePermissionCache) {
+                    // listMemberships refreshes for the current team; refresh here only if that did not cover this team and these members
+                    const last = this._permissionRefresh;
+                    const covered = !!(last && last.seq > before && team?.$id && this.currentTeam?.$id === team.$id
+                        && last.teamId === team.$id && sameMembers(last.memberships, this.currentTeamMemberships));
+                    if (!covered && updatePermissionCache) {
                         await updatePermissionCache.call(this);
                     }
                     // Update available permissions for autocomplete
