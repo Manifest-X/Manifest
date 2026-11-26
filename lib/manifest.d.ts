@@ -419,6 +419,26 @@ export interface ManifestChartConfig {
 /** `$chart(id?)` from the charts module — the chart API for the nearest (or given) instance. */
 export type ManifestChart = (id?: string) => Record<string, unknown>;
 
+/** `scrollToIndex` / `scrollToKey` options (virtual module). */
+export interface ManifestVirtualScrollOptions {
+    /** Where the item lands in the list's viewport. Default 'start'. */
+    align?: 'start' | 'center' | 'end' | 'nearest';
+    /** 'smooth' animates (instant under prefers-reduced-motion). Default instant. */
+    behavior?: 'auto' | 'instant' | 'smooth';
+    /** Extra px kept clear at the aligned edge, on top of the list's CSS scroll-padding. */
+    offset?: number;
+}
+
+/** A virtual list's scrolling API. Each call resolves with the item's row element once it is in place, or
+ *  null: no such item, superseded by a later call, cancelled by user scrolling, or the item left the list. */
+export interface ManifestVirtualList {
+    scrollToIndex(index: number, options?: ManifestVirtualScrollOptions): Promise<HTMLElement | null>;
+    scrollToKey(key: unknown, options?: ManifestVirtualScrollOptions): Promise<HTMLElement | null>;
+}
+
+/** `$virtual` from the virtual module — the x-virtual list this element is in, or `$virtual(id | element)`. */
+export type ManifestVirtual = ManifestVirtualList & ((list: string | Element) => ManifestVirtualList);
+
 /** `$export(opts)` from the export module — export the page or a data source (pdf/csv/json/...). */
 export type ManifestExport = (opts?: {
     format?: string;
@@ -789,6 +809,7 @@ export interface ManifestMagics {
     $presence: ManifestPresence;
     $date: ManifestDate;
     $chart: ManifestChart;
+    $virtual: ManifestVirtual;
     $export: ManifestExport;
     $import: ManifestImport;
     $edit: ManifestEdit;
@@ -881,6 +902,8 @@ declare global {
     const $date: ManifestDate;
     /** Charts module. */
     const $chart: ManifestChart;
+    /** Virtual module: scroll a virtual list to an item. */
+    const $virtual: ManifestVirtual;
     /** Export module. */
     const $export: ManifestExport;
     /** Import module. */

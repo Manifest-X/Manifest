@@ -58,14 +58,14 @@
   "manifest.icons.js": "sha384-gLb9vW0MRJTQi6M1HFUylSLGNohkaCyUaCfhcoRPPzJOIxVrQzMeQuFUMqRMj2Yy",
   "manifest.icons.min.js": "sha384-TZpazdx9K8xe3e7jmYoCzg7YD/7kBp1u8ScByfigopAvGJOzR4K10zpmGovwA0nv",
   "manifest.input.css": "sha384-6+ErMsR67xE2xQWUS6QPhYH89pqf4wY4GEIDPq6jcQrHDqZMthyX4I93N4DttG7c",
-  "manifest.js": "sha384-V4hPWjb+lUbf/6ui9dOAI2kh721RL3AeWGosdo1liF3ciOks6+lCPxPxeGk9NOnZ",
+  "manifest.js": "sha384-DZEdehrfaqVZ54Aay+KKkm+d2HAkowRnaAwKYBapOCW2QeK0T2olHF8o1EJI3ieP",
   "manifest.localization.js": "sha384-9EDAqnI7MNCZp4Vas0RMZgceCuz9EJUi/OARm8iI+Hi4S8HF//yyVOhhhhQ+XcLq",
   "manifest.localization.min.js": "sha384-5EkwrlpE29wmsy0JBq7UwWy8rVzEsu8tTprnsiNThVddFWsbFd63C/il4JjnWLmP",
   "manifest.markdown.js": "sha384-akK4967sMccfrxOkhvpsv4H8ylIJRVHpkzX5EUGCwhHeamWr8JLv7awh8sR34LBq",
   "manifest.markdown.min.js": "sha384-xQukORRTifFp3K1SICjNiIiOSwfzv8MMEPTGv0jFb6zsnpiYCOrM4n6KvTMFYMAp",
   "manifest.min.css": "sha384-ZLXKtchybe6D6nmOkd2CYR9LzplunAqxpUkvf8yfrn8BLT/M2jNo83Tb95mdx98L",
-  "manifest.min.js": "sha384-T7xvNz4f9eQzfibLeJYcSJqRQauBbH/+xwk0cXaEysHIKACSoGt7MIjX5jXh99vY",
-  "manifest.modules.integrity.json": "sha384-cQcFczQIZSFHLjhgzLQtAp9ZC4rPcBBQR1w4wflRAkk13Q30oCQDHLCZGcSD3ZmZ",
+  "manifest.min.js": "sha384-G6/mQZpunhDm5OttH28dPS9R5LXCYN8wfVIo3Fxmi50ZgGoUG/oxoagi4QBw2ZvT",
+  "manifest.modules.integrity.json": "sha384-4UZRDb2I+dZB18JN1SFR4s5G2inzxSjWcIv9vreCmSVwHCfrgwD+TbC0H6htnXrk",
   "manifest.native.js": "sha384-YeQaS56L8IILqrQNBSeAOLwIh5DuAOrE60cYLK1+46qJtUrXlAvqGe2j5mbV4Vq7",
   "manifest.native.min.js": "sha384-3xZep6D5icnCvKbzPxQ6QxqvJMfWI0GiADQrGkiFJEhe8sXg6P6vfIAjLUykFi+2",
   "manifest.payments.js": "sha384-3Db2i47QA5I/Id5XMkwJThxSe8wZFiEEcJaKuuIjE5yBjGBxPMWFwhE4wgdvWgOo",
@@ -110,6 +110,6 @@
   "manifest.utilities.js": "sha384-qtP3fcoOR0lA9NNFSABj02x66g4jexdq2MxjMgcjm+yY5ZlbETY2u13bTwdE2Zy7",
   "manifest.utilities.min.js": "sha384-DBq2AM0TglquZ39hbIGld1B8EB62aRpkX71lcxGJH9CvvKf2jgu2LQOJIuJQWtjl",
   "manifest.vendor.integrity.json": "sha384-xMKQh8gEBZhtaYhv09XUs3amAIT3Oh7aKrsGN0ABsnlIpbgxr5OHi5FxQTQhqz3E",
-  "manifest.virtual.js": "sha384-hBDxY250B5gR0mHIV/lxeGc95MLhN4ETRErSRBZP1o7S8EdliYybsC1Tulpm3FWv",
-  "manifest.virtual.min.js": "sha384-jIZA74lMzAOL51/56tG4C077dYXg1FL57ackQyfuzqxRm8G1bn0Ryna+9ibCypTT"
+  "manifest.virtual.js": "sha384-b/PXmgcrw30ykghmHT7g9dyFGi2o8Z5CHJht/cGrbXvm6VoRCEsghTAHIr8j0sYy",
+  "manifest.virtual.min.js": "sha384-ffk+4G8ZybBw30cK+v9e6z1QWu2XErno1qKAky99QNlkwiXY1cNlSUgC+bLs0tVs"
 }
