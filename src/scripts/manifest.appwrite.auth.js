@@ -1020,7 +1020,7 @@ function initializeAuthStore() {
             const userRequest = appwrite.account.get();
             let sessionsRequest = null;
             if (persistedIdentity()) {
-                sessionsRequest = appwrite.account.listSessions();
+                try { sessionsRequest = Promise.resolve(appwrite.account.listSessions()); } catch (error) { sessionsRequest = Promise.reject(error); }
                 sessionsRequest.catch(() => { });
             }
             const user = await userRequest;
