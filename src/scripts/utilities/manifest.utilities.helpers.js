@@ -193,6 +193,17 @@ TailwindCompiler.prototype.scanStaticClasses = async function () {
     return this.staticScanPromise;
 };
 
+// Character references in an attribute value, as the parser decodes them
+const ATTRIBUTE_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+function decodeAttributeValue(value) {
+    if (!value || !value.includes('&')) return value;
+    return value.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(amp|lt|gt|quot|apos));/gi, (m, dec, hex, name) => {
+        if (name) return ATTRIBUTE_ENTITIES[name.toLowerCase()] ?? m;
+        const code = dec ? parseInt(dec, 10) : parseInt(hex, 16);
+        return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
+    });
+}
+
 // Extract classes from HTML content
 TailwindCompiler.prototype.extractClassesFromHTML = function (html, classSet) {
     // Literal class="..."/class='...' only — lookbehind excludes `:class=`
@@ -204,11 +215,11 @@ TailwindCompiler.prototype.extractClassesFromHTML = function (html, classSet) {
     // truncating the whole class list at its first `'`.
     // Whitespace-only split below keeps every token Tailwind would accept
     // (variants, arbitrary values, leading '-', '!'); only x-/$ tokens drop.
-    const classRegex = /(?<![:\w])class=(["'])((?:(?!\1)[\s\S])*)\1/g;
+    const classRegex = /(?<![:\w])class=(?:(["'])((?:(?!\1)[\s\S])*)\1|([^\s"'=<>`]+))/g;
     let match;
 
     while ((match = classRegex.exec(html)) !== null) {
-        const classString = match[2];
+        const classString = decodeAttributeValue(match[2] ?? match[3]);
         const classes = classString.split(/\s+/).filter(Boolean);
         for (const cls of classes) {
             if (cls && !cls.startsWith('x-') && !cls.startsWith('$')) {
@@ -218,9 +229,9 @@ TailwindCompiler.prototype.extractClassesFromHTML = function (html, classSet) {
     }
 
     // x-transition:enter/leave(-start|-end) values are class lists
-    const transitionRegex = /(?<![\w:-])x-transition:[\w.-]+=(["'])((?:(?!\1)[\s\S])*)\1/g;
+    const transitionRegex = /(?<![\w:-])x-transition:[\w.-]+=(?:(["'])((?:(?!\1)[\s\S])*)\1|([^\s"'=<>`]+))/g;
     while ((match = transitionRegex.exec(html)) !== null) {
-        for (const cls of match[2].split(/\s+/)) {
+        for (const cls of decodeAttributeValue(match[2] ?? match[3]).split(/\s+/)) {
             if (cls && !cls.startsWith('x-') && !cls.startsWith('$')) classSet.add(cls);
         }
     }
