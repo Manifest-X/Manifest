@@ -189,3 +189,46 @@ describe('boot teams prefetch', () => {
         expect(store.teams.map(t => t.$id)).toEqual(['t1', 't2'])
     })
 })
+
+describe('a hung prefetch', () => {
+    it('never settling: the load falls back to a normal teams.list after the bounded wait', async () => {
+        let lists = 0
+        const page = boot({ cfg, persisted: persistedA, responder: responder({ over: { 'teams.list': () => (++lists === 1 ? undefined : teamsA) } }) })
+        page.store._prefetchWaitMs = 150
+        await waitFor(page.events, 'teams-loaded')
+        expect(count(page.fake, 'teams.list')).toBe(2)
+        expect(page.fake.calls.filter(c => c.name === 'teams.list')[0].settled).toBe(false)
+        expect(page.store.teams.map(t => t.$id)).toEqual(['t1', 't2'])
+    })
+
+    it('settling after the fallback answered: the late result is ignored', async () => {
+        const unhandled = []
+        const onUnhandled = e => unhandled.push(e)
+        process.on('unhandledRejection', onUnhandled)
+        try {
+            let lists = 0
+            const page = boot({ cfg, persisted: persistedA, responder: responder({ over: { 'teams.list': () => (++lists === 1 ? undefined : teamsA) } }) })
+            page.store._prefetchWaitMs = 150
+            await waitFor(page.events, 'teams-loaded')
+            const writes = []
+            let teams = page.store.teams
+            Object.defineProperty(page.store, 'teams', { get: () => teams, set: v => { writes.push(v); teams = v }, configurable: true })
+            const late = page.fake.calls.find(c => c.name === 'teams.list' && !c.settled)
+            late.resolve({ teams: [{ $id: 'late', name: 'Late' }], total: 1 })
+            await sleep(50)
+            expect(writes).toEqual([])
+            expect(page.store.teams.map(t => t.$id)).toEqual(['t1', 't2'])
+            expect(page.store.currentTeam.$id).toBe('t1')
+            // and a late failure is swallowed too
+            const page2 = boot({ cfg, persisted: persistedA, responder: responder({ over: { 'teams.list': () => (lists++ === 2 ? undefined : teamsA) } }) })
+            page2.store._prefetchWaitMs = 150
+            await waitFor(page2.events, 'teams-loaded')
+            page2.fake.calls.find(c => c.name === 'teams.list' && !c.settled).reject(new Error('late failure'))
+            await sleep(50)
+            expect(unhandled).toEqual([])
+            expect(page2.store.teams.map(t => t.$id)).toEqual(['t1', 't2'])
+        } finally {
+            process.off('unhandledRejection', onUnhandled)
+        }
+    })
+})

@@ -133,9 +133,12 @@ function initializeTeamsCore() {
                     if (prefetched && !prefetched.used && Array.isArray(queries) && queries.length === 0 && !params.search
                         && prefetched.userId === owner && prefetched.teamsEpoch === generation && prefetched.authEpoch === this._authEpoch) {
                         prefetched.used = true;
-                        const early = await prefetched.request;
+                        // A hung prefetch is abandoned after a bounded wait; its late answer is ignored
+                        let timer;
+                        const early = await Promise.race([prefetched.request, new Promise(r => { timer = setTimeout(() => r({ timedOut: true }), this._prefetchWaitMs ?? 3000); })]);
+                        clearTimeout(timer);
                         if (stale()) return discarded;
-                        if (!early.error && early.value && prefetched.authEpoch === this._authEpoch) result = early.value;
+                        if (!early.timedOut && !early.error && early.value && prefetched.authEpoch === this._authEpoch) result = early.value;
                     }
                     if (!result) result = await this._appwrite.teams.list(params);
                     if (stale()) return discarded;

@@ -221,6 +221,7 @@ function initializeAuthStore() {
         _crossTabTeams: null, // latest cross-tab team load; older ones skip their writes
         _teamsEpoch: 0, // bumped by every team reset; an in-flight listTeams from an older one is discarded
         _authEpoch: 0, // bumped by every identity change; an in-flight recheck from an older epoch is dropped
+        _prefetchWaitMs: 3000, // longest the boot teams load waits on its prefetched list
         _recheckTimer: null,
         _recheckAttempt: 0,
         guestManualEnabled: false,
