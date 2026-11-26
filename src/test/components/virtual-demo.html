@@ -13,6 +13,7 @@
 
 <div class="vtest col gap-8" x-data="{
     count: 5000,
+    jump: 2500,
     query: '',
     sorted: false,
     sortAsc: false,
@@ -71,6 +72,10 @@
         <input type="search" placeholder="Filter name / email / role…" x-model="query" @input.debounce.150ms="refresh()" style="max-width: 16rem">
         <button @click="sorted = true; sortAsc = !sortAsc; refresh()" x-text="sorted ? (sortAsc ? 'Name ↑' : 'Name ↓') : 'Sort by name'"></button>
         <button class="ghost" @click="shuffle()">Shuffle</button>
+        <label class="col gap-1 caption">Index
+            <input type="number" min="0" x-model.number="jump" style="max-width: 7rem">
+        </label>
+        <button class="ghost" @click="$root.querySelectorAll('[x-virtual]').forEach(el => $virtual(el).scrollToIndex(jump, { behavior: 'smooth' }))">Scroll to index</button>
         <span class="note ml-auto">Showing <span x-text="view.length"></span> of <span x-text="all.length"></span></span>
     </div>
 
