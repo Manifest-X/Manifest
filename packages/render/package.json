@@ -10,6 +10,7 @@
     "bin",
     "manifest.render.mjs",
     "manifest.render.page.mjs",
+    "manifest.tailwind.variants.mjs",
     "README.md"
   ],
   "scripts": {

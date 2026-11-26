@@ -2,6 +2,27 @@
 
 (function () {
 
+// Tailwind custom variants (browser engine, node bake, render CLI)
+const TAILWIND_CUSTOM_VARIANTS = [
+    '@custom-variant touch (@media (pointer: coarse));',
+    '@custom-variant cursor (@media (pointer: fine) and (hover: hover));',
+    '@custom-variant pointer (@media (any-pointer: fine));',
+    '@custom-variant mac (&:where([data-os="macos"] *));',
+    '@custom-variant windows (&:where([data-os="windows"] *));',
+    '@custom-variant linux (&:where([data-os="linux"] *));',
+    '@custom-variant ios (&:where([data-os="ios"] *));',
+    '@custom-variant android (&:where([data-os="android"] *));',
+    '@custom-variant apple (&:where([data-os="macos"] *, [data-os="ios"] *));',
+    '@custom-variant online (&:where([data-online="true"] *));',
+    '@custom-variant offline (&:where([data-online="false"] *));',
+    '@custom-variant standalone (&:where([data-standalone] *));',
+    '@custom-variant native (&:where([data-native] *));',
+    '@custom-variant web (&:where(html:not([data-native]) *));'
+];
+const TAILWIND_DARK_VARIANT = '@custom-variant dark (&:where(.dark, .dark *));';
+const AUTHOR_DARK_RE = /@custom-variant\s+dark[\s({]/;
+
+
 // Utility generators
 // Functions that generate CSS utilities from CSS variable suffixes
 
@@ -5158,26 +5179,13 @@ function injectTailwindVariants() {
         if (document.getElementById('manifest-tailwind-variants')) return;
         // Dark follows $color's .dark class; an author's own declaration wins
         const authorDark = Array.from(document.querySelectorAll('style[type="text/tailwindcss"]'))
-            .some(s => /@custom-variant\s+dark[\s({]/.test(s.textContent || ''));
+            .some(s => AUTHOR_DARK_RE.test(s.textContent || ''));
         const style = document.createElement('style');
         style.id = 'manifest-tailwind-variants';
         style.setAttribute('type', 'text/tailwindcss');
         style.textContent = [
-            '@custom-variant touch (@media (pointer: coarse));',
-            '@custom-variant cursor (@media (pointer: fine) and (hover: hover));',
-            '@custom-variant pointer (@media (any-pointer: fine));',
-            '@custom-variant mac (&:where([data-os="macos"] *));',
-            '@custom-variant windows (&:where([data-os="windows"] *));',
-            '@custom-variant linux (&:where([data-os="linux"] *));',
-            '@custom-variant ios (&:where([data-os="ios"] *));',
-            '@custom-variant android (&:where([data-os="android"] *));',
-            '@custom-variant apple (&:where([data-os="macos"] *, [data-os="ios"] *));',
-            '@custom-variant online (&:where([data-online="true"] *));',
-            '@custom-variant offline (&:where([data-online="false"] *));',
-            '@custom-variant standalone (&:where([data-standalone] *));',
-            '@custom-variant native (&:where([data-native] *));',
-            '@custom-variant web (&:where(html:not([data-native]) *));',
-            ...(authorDark ? [] : ['@custom-variant dark (&:where(.dark, .dark *));'])
+            ...TAILWIND_CUSTOM_VARIANTS,
+            ...(authorDark ? [] : [TAILWIND_DARK_VARIANT])
         ].join('\n');
         (document.head || document.documentElement).appendChild(style);
     } catch (e) {

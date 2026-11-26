@@ -77,6 +77,7 @@ import {
   loadContentFrom,
   seoConfigFromManifest,
 } from './manifest.render.page.mjs';
+import { TAILWIND_CUSTOM_VARIANTS, TAILWIND_DARK_VARIANT, AUTHOR_DARK_RE } from './manifest.tailwind.variants.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -671,25 +672,6 @@ function stripTailwindPreflightConflicts(css) {
     .replace(/(\s*)hr\s*\{\s*height:\s*0;\s*color:\s*inherit;\s*border-top-width:\s*1px;?\s*\}/g, '');
 }
 
-// Mirror of injectTailwindVariants() in manifest.utilities.init.js (parity-tested).
-const TAILWIND_CUSTOM_VARIANTS = [
-  '@custom-variant touch (@media (pointer: coarse));',
-  '@custom-variant cursor (@media (pointer: fine) and (hover: hover));',
-  '@custom-variant pointer (@media (any-pointer: fine));',
-  '@custom-variant mac (&:where([data-os="macos"] *));',
-  '@custom-variant windows (&:where([data-os="windows"] *));',
-  '@custom-variant linux (&:where([data-os="linux"] *));',
-  '@custom-variant ios (&:where([data-os="ios"] *));',
-  '@custom-variant android (&:where([data-os="android"] *));',
-  '@custom-variant apple (&:where([data-os="macos"] *, [data-os="ios"] *));',
-  '@custom-variant online (&:where([data-online="true"] *));',
-  '@custom-variant offline (&:where([data-online="false"] *));',
-  '@custom-variant standalone (&:where([data-standalone] *));',
-  '@custom-variant native (&:where([data-native] *));',
-  '@custom-variant web (&:where(html:not([data-native]) *));',
-];
-const TAILWIND_DARK_VARIANT = '@custom-variant dark (&:where(.dark, .dark *));';
-const AUTHOR_DARK_RE = /@custom-variant\s+dark[\s({]/;
 const stripCssComments = (css) => String(css || '')
   .replace(/("(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*')|\/\*[\s\S]*?(?:\*\/|$)/g, (m, str) => str ?? '');
 // Live engine maps these relative imports to Tailwind's own files
