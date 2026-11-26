@@ -1554,6 +1554,14 @@ TailwindCompiler.prototype.extractClassesFromHTML = function (html, classSet) {
         }
     }
 
+    // x-transition:enter/leave(-start|-end) values are class lists
+    const transitionRegex = /(?<![\w:-])x-transition:[\w.-]+=(["'])((?:(?!\1)[\s\S])*)\1/g;
+    while ((match = transitionRegex.exec(html)) !== null) {
+        for (const cls of match[2].split(/\s+/)) {
+            if (cls && !cls.startsWith('x-') && !cls.startsWith('$')) classSet.add(cls);
+        }
+    }
+
     // Alpine class bindings: every literal they could apply
     const bindingRegex = /(?<![\w-])(?::|x-bind:)class=(["'])((?:(?!\1)[\s\S])*)\1/g;
     while ((match = bindingRegex.exec(html)) !== null) {
