@@ -580,6 +580,14 @@ function initializeAuthStore() {
         try { const saved = JSON.parse(raw || 'null'); return saved?.isAuthenticated ? (saved.user?.$id || null) : null; } catch { return null; }
     }
 
+    // Last signed-in identity this browser mirrored: a hint only, never trusted as identity
+    function persistedIdentity() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+            return saved?.isAuthenticated === true && saved.user?.$id ? { userId: saved.user.$id, isAnonymous: saved.isAnonymous === true } : null;
+        } catch { return null; }
+    }
+
     // Identity this tab is showing data for: while unverified, the last one mirrored
     function shownUserId(store, mirrored) {
         if (store.user?.$id) return store.user.$id;
@@ -721,6 +729,7 @@ function initializeAuthStore() {
         editingMember: null, // Current member being edited: { teamId, membershipId, roles }
         _initialized: false,
         _initializing: false,
+        _initAnnounced: false, // manifest:auth:initialized has fired
         _appwrite: null,
         _guestAuto: false,
         _guestManual: false,
@@ -729,6 +738,7 @@ function initializeAuthStore() {
         _crossTabTeams: null, // latest cross-tab team load; older ones skip their writes
         _teamsEpoch: 0, // bumped by every team reset; an in-flight listTeams from an older one is discarded
         _authEpoch: 0, // bumped by every identity change; an in-flight recheck from an older epoch is dropped
+        _prefetchWaitMs: 3000, // longest the boot teams load waits on its prefetched list
         _recheckTimer: null,
         _recheckAttempt: 0,
         guestManualEnabled: false,
@@ -742,6 +752,7 @@ function initializeAuthStore() {
         _allRolesCacheByTeam: {}, // Cache roles per team ID
         _rolePermanentCache: {}, // Cache permanent role status per team: { teamId: { roleName: true/false } }
         _userGeneratedRolesCache: {},
+        _permissionRefresh: null, // last finished permission refresh: { seq, teamId, memberships }
 
         // Permission cache methods (always available, return safe defaults)
         canInviteMembers() {
@@ -916,6 +927,7 @@ function initializeAuthStore() {
 
             // Hoisted so the post-init background team load (below) can read it.
             let appwriteConfig = null;
+            let earlyTeams = null;
 
             try {
                 const appwrite = await config.getAppwriteClient();
@@ -936,7 +948,9 @@ function initializeAuthStore() {
 
                 // Try to restore existing session
                 try {
-                    await this._restoreSession(appwrite);
+                    const restoring = this._restoreSession(appwrite);
+                    earlyTeams = this._prefetchTeams(appwrite, appwriteConfig);
+                    await restoring;
 
                     // Team loading is deferred (not awaited) — runs in the background after
                     // manifest:auth:initialized so a session gate isn't held up by it.
@@ -977,6 +991,7 @@ function initializeAuthStore() {
 
                 // Fire as soon as identity is known, before teams load, so a session
                 // gate / splash clears in a few hundred ms.
+                this._initAnnounced = true;
                 window.dispatchEvent(new CustomEvent('manifest:auth:initialized', {
                     detail: {
                         isAuthenticated: this.isAuthenticated,
@@ -990,7 +1005,9 @@ function initializeAuthStore() {
             if (appwriteConfig && this.isAuthenticated && appwriteConfig.teams
                 && (!this.isAnonymous || appwriteConfig.guestTeams)) {
                 const owner = this.user?.$id;
-                this._loadTeamsAndSeed(appwriteConfig)
+                const prefetched = earlyTeams && earlyTeams.userId === owner && earlyTeams.authEpoch === this._authEpoch
+                    && earlyTeams.teamsEpoch === this._teamsEpoch ? earlyTeams : null;
+                this._loadTeamsAndSeed(appwriteConfig, { prefetched })
                     .then(() => {
                         if (!this.isAuthenticated || this.user?.$id !== owner) return;
                         window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded', {
@@ -1003,8 +1020,15 @@ function initializeAuthStore() {
 
         // Adopt the session Appwrite reports (throws when there is none or it is unreachable)
         async _restoreSession(appwrite, isCurrent = () => true) {
-            const user = await appwrite.account.get();
-            const sessionsResponse = await appwrite.account.listSessions();
+            // Both in flight when a session is likely; account.get's error still wins
+            const userRequest = appwrite.account.get();
+            let sessionsRequest = null;
+            if (persistedIdentity()) {
+                try { sessionsRequest = Promise.resolve(appwrite.account.listSessions()); } catch (error) { sessionsRequest = Promise.reject(error); }
+                sessionsRequest.catch(() => { });
+            }
+            const user = await userRequest;
+            const sessionsResponse = await (sessionsRequest || appwrite.account.listSessions());
             if (!isCurrent()) return false;
             this.user = user;
             const allSessions = sessionsResponse.sessions || [];
@@ -1049,6 +1073,20 @@ function initializeAuthStore() {
                 this.isAnonymous = false;
             }
             return true;
+        },
+
+        // Boot teams list issued alongside the identity check for the mirrored identity; listTeams uses it only for that identity
+        _prefetchTeams(appwrite, cfg) {
+            const hint = persistedIdentity();
+            if (!hint || !cfg?.teams || typeof appwrite?.teams?.list !== 'function') return null;
+            if (hint.isAnonymous && (!cfg.guestTeams || (!this._guestAuto && !this._guestManual))) return null;
+            let request;
+            try {
+                request = Promise.resolve(appwrite.teams.list({ queries: [] })).then(value => ({ value }), error => ({ error }));
+            } catch (error) {
+                return null;
+            }
+            return { userId: hint.userId, authEpoch: this._authEpoch, teamsEpoch: this._teamsEpoch, request, used: false };
         },
 
         // Offline-booted tab: re-run the session check once Appwrite is reachable
@@ -1155,7 +1193,7 @@ function initializeAuthStore() {
 
         // Load the user's teams and seed configured defaults. Shared by the guest,
         // magic-link, OAuth, and init/restore paths.
-        async _loadTeamsAndSeed(appwriteConfig, { seed = true } = {}) {
+        async _loadTeamsAndSeed(appwriteConfig, { seed = true, prefetched = null } = {}) {
             const cfg = appwriteConfig || await config.getAppwriteConfig();
             if (!cfg?.teams) {
                 return;
@@ -1175,7 +1213,7 @@ function initializeAuthStore() {
             // Always load the user's real teams. Capture the result — never seed defaults
             // off an unconfirmed team list: a failed/incomplete load must not read as
             // "teamless" and mint a duplicate tenant (the settle-window mis-provision).
-            const loadResult = await this.listTeams();
+            const loadResult = prefetched ? await this.listTeams([], '', { prefetched }) : await this.listTeams();
             if (!needsSeed) {
                 return;
             }
@@ -1479,6 +1517,7 @@ window.ManifestAppwriteAuthStore = {
 
 // Initialize auth plugin - orchestrates all modules
 let _pluginInitializing = false;
+let _initHandled = false;
 async function initializeAppwriteAuthPlugin() {
     if (_pluginInitializing) {
         return;
@@ -1505,7 +1544,20 @@ async function initializeAppwriteAuthPlugin() {
             }
 
             // After store init, process callbacks and validate config
-            window.addEventListener('manifest:auth:initialized', async () => {
+            const onInitialized = async () => {
+                if (_initHandled) return;
+                _initHandled = true;
+                const callbacks = window.ManifestAppwriteAuthCallbacks;
+                const callbackInfo = callbacks ? callbacks.detect() : null;
+                // Store methods this work calls attach on the other modules' 100 ms timers: wait briefly for them
+                const needed = [];
+                if (store._guestAuto) needed.push('_createAnonymousSession');
+                if (callbackInfo?.hasCallback && !callbackInfo.isOAuth) needed.push(callbackInfo.isTeamInvite ? 'acceptInvite' : 'handleMagicLinkCallback');
+                const missing = () => needed.filter(name => typeof store[name] !== 'function');
+                for (let i = 0; i < 40 && missing().length; i++) {
+                    await new Promise(r => setTimeout(r, 50));
+                }
+                if (missing().length) console.warn('[Manifest Appwrite Auth] Auth modules not ready after init:', missing().join(', '));
                 // Validate role configuration if roles module is loaded
                 if (store.validateRoleConfig) {
                     const validation = await store.validateRoleConfig();
@@ -1517,18 +1569,18 @@ async function initializeAppwriteAuthPlugin() {
                 }
 
                 // Process callbacks after store is initialized
-                if (window.ManifestAppwriteAuthCallbacks) {
-                    const callbackInfo = window.ManifestAppwriteAuthCallbacks.detect();
-                    if (callbackInfo.hasCallback || callbackInfo.hasExpired) {
-                        window.ManifestAppwriteAuthCallbacks.process(callbackInfo);
-                    }
+                if (callbacks && (callbackInfo.hasCallback || callbackInfo.hasExpired)) {
+                    callbacks.process(callbackInfo);
                 }
 
                 // If no session and guest-auto is enabled, create guest session (not while the session check is unreachable)
                 if (!store.isAuthenticated && !store._sessionUnverified && store._guestAuto && store._createAnonymousSession) {
                     store._createAnonymousSession();
                 }
-            }, { once: true });
+            };
+            // Init may have finished inside the start delay
+            if (store._initAnnounced) onInitialized();
+            else window.addEventListener('manifest:auth:initialized', onInitialized, { once: true });
 
             _pluginInitializing = false;
         } else {
@@ -1841,7 +1893,7 @@ function initializeTeamsCore() {
             };
 
             // List user's teams
-            store.listTeams = async function (queries = [], search = '') {
+            store.listTeams = async function (queries = [], search = '', { prefetched = null } = {}) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
                 }
@@ -1867,7 +1919,19 @@ function initializeTeamsCore() {
                     if (search && search.trim().length > 0) {
                         params.search = search;
                     }
-                    const result = await this._appwrite.teams.list(params);
+                    // Boot prefetch: only for this identity and epoch, once; a failed or superseded one falls through to a fresh list
+                    let result = null;
+                    if (prefetched && !prefetched.used && Array.isArray(queries) && queries.length === 0 && !params.search
+                        && prefetched.userId === owner && prefetched.teamsEpoch === generation && prefetched.authEpoch === this._authEpoch) {
+                        prefetched.used = true;
+                        // A hung prefetch is abandoned after a bounded wait; its late answer is ignored
+                        let timer;
+                        const early = await Promise.race([prefetched.request, new Promise(r => { timer = setTimeout(() => r({ timedOut: true }), this._prefetchWaitMs ?? 3000); })]);
+                        clearTimeout(timer);
+                        if (stale()) return discarded;
+                        if (!early.timedOut && !early.error && early.value && prefetched.authEpoch === this._authEpoch) result = early.value;
+                    }
+                    if (!result) result = await this._appwrite.teams.list(params);
                     if (stale()) return discarded;
 
                     // Update store with teams
@@ -2403,6 +2467,8 @@ function initializeTeamsCore() {
                             // Refresh teams list if needed (only once per event batch)
                             // This also refreshes roles/permissions since they're stored in team preferences
                             if (shouldRefreshTeams && !this._teamsRealtimeSubscribing) {
+                                // Prefs may have changed elsewhere
+                                if (typeof invalidateRolesCache === 'function') invalidateRolesCache();
                                 this._teamsRealtimeSubscribing = true;
                                 if (this.listTeams) {
                                     this.listTeams().finally(() => {
@@ -2625,6 +2691,7 @@ function initializeTeamsCore() {
                 this._teamsPollInterval = setInterval(async () => {
                     if (this.isAuthenticated && this.listTeams) {
                         try {
+                            if (typeof invalidateRolesCache === 'function') invalidateRolesCache();
                             await this.listTeams();
                         } catch (error) {
                             console.warn('[Manifest Appwrite Auth] Teams polling error:', error);
@@ -2663,11 +2730,7 @@ function initializeTeamsCore() {
                 this.error = null;
 
                 try {
-                    invalidateRolesCache(teamId);
-                    const result = await this._appwrite.teams.updatePrefs({
-                        teamId: teamId,
-                        prefs: prefs
-                    });
+                    const result = await writeTeamPrefs(this._appwrite, teamId, prefs);
 
                     return { success: true, prefs: result };
                 } catch (error) {
@@ -3283,7 +3346,13 @@ function initializeTeamsRolesDefaults() {
                 let deletedRoles = [];
                 try {
                     if (this._appwrite && this._appwrite.teams) {
-                        const prefs = await this._appwrite.teams.getPrefs({ teamId });
+                        // Shared prefs read; a cached failure other than 404 is retried as its own read
+                        const fresh = () => this._appwrite.teams.getPrefs({ teamId }).then(prefs => ({ prefs }), error => ({ error }));
+                        const shared = typeof readTeamPrefs === 'function';
+                        let read = shared ? await readTeamPrefs(teamId, this._appwrite) : await fresh();
+                        if (shared && read.error && !String(read.error.message || '').includes('could not be found')) read = await fresh();
+                        if (read.error) throw read.error;
+                        const prefs = read.prefs;
                         // Deleted template roles are stored in team preferences under 'deletedTemplateRoles'
                         if (prefs && prefs.deletedTemplateRoles && Array.isArray(prefs.deletedTemplateRoles)) {
                             deletedRoles = prefs.deletedTemplateRoles;
@@ -3354,11 +3423,7 @@ function initializeTeamsRolesDefaults() {
                         roles: updatedRoles,
                         deletedTemplateRoles: deletedRoles // Update deleted list in team preferences
                     };
-                    invalidateRolesCache(teamId);
-                    await this._appwrite.teams.updatePrefs({
-                        teamId: teamId,
-                        prefs: updatedPrefs
-                    });
+                    await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
 
                     // Also remove from localStorage for backwards compatibility (if it exists)
                     try {
@@ -3458,11 +3523,7 @@ function initializeTeamsRolesDefaults() {
                             ...currentPrefs,
                             roles: updatedRoles
                         };
-                        invalidateRolesCache(teamId);
-                        await this._appwrite.teams.updatePrefs({
-                            teamId: teamId,
-                            prefs: updatedPrefs
-                        });
+                        await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
 
                         // Refresh cache for this team
                         if (this.getAllRoles) {
@@ -3610,40 +3671,42 @@ function roleHasAllOwnerPermissions(roleName, memberRoles) {
     return OWNER_PERMISSIONS.every(perm => permissions.includes(perm));
 }
 
-// User-generated roles live in team prefs; one read per team is shared by every permission check
-// for a short window and dropped on any auth change or prefs write
+// Team prefs (user-generated roles, deleted template roles): one read per team shared for a short
+// window; dropped on any identity change, around every prefs write and on a realtime team update
 const ROLES_CACHE_TTL_MS = 15000;
-const rolesCache = new Map();   // teamId -> { at, promise }
+const rolesCache = new Map();   // teamId -> { at, promise of { prefs } | { error } }
 function invalidateRolesCache(teamId) { if (teamId === undefined) rolesCache.clear(); else rolesCache.delete(teamId); }
 if (typeof window !== 'undefined') {
-    ['manifest:auth:login', 'manifest:auth:logout', 'manifest:auth:anonymous', 'manifest:auth:session-cleared', 'manifest:auth:initialized', 'manifest:auth:teams-loaded']
+    ['manifest:auth:login', 'manifest:auth:logout', 'manifest:auth:anonymous', 'manifest:auth:session-cleared', 'manifest:auth:initialized']
         .forEach(type => window.addEventListener(type, () => invalidateRolesCache()));
+}
+
+function readTeamPrefs(teamId, appwrite) {
+    const hit = rolesCache.get(teamId);
+    if (hit && Date.now() - hit.at < ROLES_CACHE_TTL_MS) return hit.promise;
+    let request;
+    try { request = Promise.resolve(appwrite.teams.getPrefs({ teamId })); } catch (error) { request = Promise.reject(error); }
+    const promise = request.then(prefs => ({ prefs }), error => ({ error }));
+    rolesCache.set(teamId, { at: Date.now(), promise });
+    return promise;
+}
+
+async function writeTeamPrefs(appwrite, teamId, prefs) {
+    invalidateRolesCache(teamId);
+    try {
+        return await appwrite.teams.updatePrefs({ teamId, prefs });
+    } finally {
+        invalidateRolesCache(teamId);
+    }
 }
 
 async function getUserGeneratedRoles(teamId, appwrite) {
     if (!appwrite || !appwrite.teams) {
         return null;
     }
-    const hit = rolesCache.get(teamId);
-    if (hit && Date.now() - hit.at < ROLES_CACHE_TTL_MS) return hit.promise;
-    const promise = readUserGeneratedRoles(teamId, appwrite);
-    rolesCache.set(teamId, { at: Date.now(), promise });
-    promise.catch(() => rolesCache.delete(teamId));   // a null result (no custom roles) is a valid, cached answer
-    return promise;
-}
-
-async function readUserGeneratedRoles(teamId, appwrite) {
-    try {
-        const prefs = await appwrite.teams.getPrefs({ teamId });
-        return prefs?.roles || null;
-    } catch (error) {
-        // Prefs may lack roles, or team deleted (404) → null
-        if (error.message && error.message.includes('could not be found')) {
-            return null;
-        }
-        // For other errors, also return null (team preferences might not exist yet)
-        return null;
-    }
+    // A failed read (404, no prefs yet) is "no custom roles"
+    const { prefs } = await readTeamPrefs(teamId, appwrite);
+    return prefs?.roles || null;
 }
 
 // Merge manifest roles with user-generated roles (user-generated overrides manifest)
@@ -4084,11 +4147,7 @@ function initializeTeamsUserRoles() {
                         ...currentPrefs,
                         roles: updatedRoles
                     };
-                    invalidateRolesCache(teamId);
-                    await this._appwrite.teams.updatePrefs({
-                        teamId: teamId,
-                        prefs: updatedPrefs
-                    });
+                    await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
 
                     // Refresh permission cache to update UI
                     if (this.refreshPermissionCache) {
@@ -4203,11 +4262,7 @@ function initializeTeamsUserRoles() {
                         ...currentPrefs,
                         roles: updatedRoles
                     };
-                    invalidateRolesCache(teamId);
-                    await this._appwrite.teams.updatePrefs({
-                        teamId: teamId,
-                        prefs: updatedPrefs
-                    });
+                    await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
 
                     // Refresh permission cache to update UI
                     if (this.refreshPermissionCache) {
@@ -4305,11 +4360,7 @@ function initializeTeamsUserRoles() {
                         ...currentPrefs,
                         roles: updatedRoles
                     };
-                    invalidateRolesCache(teamId);
-                    await this._appwrite.teams.updatePrefs({
-                        teamId: teamId,
-                        prefs: updatedPrefs
-                    });
+                    await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
 
                     // Update all memberships that have the old role name to use the new role name
                     // This prevents data drift where role names in memberships don't match role definitions
@@ -4471,12 +4522,7 @@ function initializeTeamsUserRoles() {
                                     deletedTemplateRoles: deletedRoles
                                 };
 
-                                invalidateRolesCache(teamId);
-
-                                await this._appwrite.teams.updatePrefs({
-                                    teamId: teamId,
-                                    prefs: updatedPrefs
-                                });
+                                await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
                             }
                         } catch (e) {
                             // Fallback to localStorage for backwards compatibility
@@ -4508,11 +4554,7 @@ function initializeTeamsUserRoles() {
                             ...currentPrefs,
                             roles: updatedRoles
                         };
-                        invalidateRolesCache(teamId);
-                        await this._appwrite.teams.updatePrefs({
-                            teamId: teamId,
-                            prefs: updatedPrefs
-                        });
+                        await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
                     }
 
                     // Update per-team cache for this specific team (create new object reference for reactivity)
@@ -4735,7 +4777,10 @@ function initializeTeamsMembers() {
                     if (search && search.trim().length > 0) {
                         params.search = search;
                     }
-                    const result = await this._appwrite.teams.listMemberships(params);
+                    const request = this._appwrite.teams.listMemberships(params);
+                    // The current team's prefs are needed next (display roles, permissions): read them alongside
+                    if (this.currentTeam?.$id === teamId && this.getUserGeneratedRoles) this.getUserGeneratedRoles(teamId).catch(() => { });
+                    const result = await request;
                     let memberships = result.memberships || [];
 
                     // Enhance memberships with user email if missing
@@ -5220,6 +5265,8 @@ function initializeTeamsConvenience() {
             if (!store._allRolesCacheByTeam) store._allRolesCacheByTeam = {};
             if (!store._userGeneratedRolesCache) store._userGeneratedRolesCache = {};
 
+            const sameMembers = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((m, i) => m === b[i]);
+
             // Update permission cache when team changes
             const updatePermissionCache = async function () {
                 if (!this.currentTeam || !this.currentTeamMemberships || !this.user) {
@@ -5232,57 +5279,48 @@ function initializeTeamsConvenience() {
                 }
 
                 const teamId = this.currentTeam.$id;
+                const memberships = this.currentTeamMemberships;
                 const permissions = ['inviteMembers', 'updateMembers', 'removeMembers', 'renameTeam', 'deleteTeam', 'manageRoles'];
 
-                // Cache permissions
+                // Computed first, written only if the team and its members are unchanged (a newer refresh owns them otherwise)
+                const permissionCache = {};
                 for (const perm of permissions) {
-                    if (this.hasTeamPermission) {
-                        const hasPerm = await this.hasTeamPermission(perm);
-                        this._permissionCache[perm] = hasPerm;
-                    } else {
-                        this._permissionCache[perm] = false;
-                    }
+                    permissionCache[perm] = this.hasTeamPermission ? await this.hasTeamPermission(perm) : false;
                 }
+                const userRole = this.getUserRole ? await this.getUserRole() : null;
 
-                // Cache user role
-                if (this.getUserRole) {
-                    this._userRoleCache = await this.getUserRole();
-                } else {
-                    this._userRoleCache = null;
-                }
-
-                // Cache all roles
+                let rolesCopy = {};
+                const userGenerated = {};
                 if (this.getAllRoles) {
                     const allRoles = await this.getAllRoles(teamId);
-                    // Create new object reference to ensure Alpine reactivity
-                    const rolesCopy = allRoles ? { ...allRoles } : {};
-                    this._allRolesCache = rolesCopy;
-                    // Also cache by team ID for per-team lookups (create new object reference)
-                    if (!this._allRolesCacheByTeam) this._allRolesCacheByTeam = {};
-                    this._allRolesCacheByTeam[teamId] = { ...rolesCopy };
+                    rolesCopy = allRoles ? { ...allRoles } : {};
 
                     // Pre-populate permanent role cache for all roles (for isRoleDeletable to work)
                     if (!this._rolePermanentCache) this._rolePermanentCache = {};
                     if (!this._rolePermanentCache[teamId]) this._rolePermanentCache[teamId] = {};
                     if (this.isRolePermanent) {
                         for (const roleName of Object.keys(rolesCopy)) {
-                            // Pre-cache permanent status for all roles
                             await this.isRolePermanent(teamId, roleName);
                         }
                     }
 
-                    // Cache which roles are user-generated (always check, no feature flag needed)
-                    this._userGeneratedRolesCache = {};
-                    if (this._allRolesCache && this.isUserGeneratedRole) {
-                        for (const roleName of Object.keys(this._allRolesCache)) {
-                            this._userGeneratedRolesCache[roleName] = await this.isUserGeneratedRole(teamId, roleName);
+                    // Which roles are user-generated
+                    if (this.isUserGeneratedRole) {
+                        for (const roleName of Object.keys(rolesCopy)) {
+                            userGenerated[roleName] = await this.isUserGeneratedRole(teamId, roleName);
                         }
                     }
-                } else {
-                    this._allRolesCache = {};
-                    if (!this._allRolesCacheByTeam) this._allRolesCacheByTeam = {};
-                    this._allRolesCacheByTeam[teamId] = {};
                 }
+
+                // Per-team roles are correct for their key either way
+                if (!this._allRolesCacheByTeam) this._allRolesCacheByTeam = {};
+                this._allRolesCacheByTeam[teamId] = { ...rolesCopy };
+                if (this.currentTeam?.$id !== teamId || !sameMembers(memberships, this.currentTeamMemberships)) return;
+                this._permissionCache = permissionCache;
+                this._userRoleCache = userRole;
+                this._allRolesCache = rolesCopy;
+                this._userGeneratedRolesCache = userGenerated;
+                this._permissionRefresh = { seq: (this._permissionRefresh?.seq || 0) + 1, teamId, memberships };
             };
 
             // Public method to refresh permission cache
@@ -5512,7 +5550,8 @@ function initializeTeamsConvenience() {
                     }
                     if (team && team.$id && this.listMemberships) {
                         const result = await this.listMemberships(team.$id);
-                        if (result.success) {
+                        // A later viewTeam owns the members list once it has switched team
+                        if (result.success && this.currentTeam?.$id === team.$id) {
                             this.currentTeamMemberships = result.memberships || [];
                         }
                     }
@@ -6055,9 +6094,13 @@ function initializeTeamsConvenience() {
             if (store.viewTeam && !store._viewTeamWrapped) {
                 const originalViewTeam = store.viewTeam;
                 store.viewTeam = async function (team) {
+                    const before = this._permissionRefresh?.seq || 0;
                     const result = await originalViewTeam.call(this, team);
-                    // Update cache after viewing team (which loads memberships)
-                    if (updatePermissionCache) {
+                    // listMemberships refreshes for the current team; refresh here only if that did not cover this team and these members
+                    const last = this._permissionRefresh;
+                    const covered = !!(last && last.seq > before && team?.$id && this.currentTeam?.$id === team.$id
+                        && last.teamId === team.$id && sameMembers(last.memberships, this.currentTeamMemberships));
+                    if (!covered && updatePermissionCache) {
                         await updatePermissionCache.call(this);
                     }
                     // Update available permissions for autocomplete

@@ -36,8 +36,15 @@ describe('user-generated roles cache', () => {
         await api.getUserGeneratedRoles('t1', appwrite)
         api.invalidateRolesCache('t1')
         await api.getUserGeneratedRoles('t1', appwrite)
-        window.dispatchEvent(new window.CustomEvent('manifest:auth:teams-loaded'))
+        window.dispatchEvent(new window.CustomEvent('manifest:auth:login'))
         await api.getUserGeneratedRoles('t1', appwrite)
         expect(reads).toEqual(['t1', 't1', 't1'])
+    })
+
+    it('keeps the boot read across teams-loaded (same identity, read during that load)', async () => {
+        await api.getUserGeneratedRoles('t1', appwrite)
+        window.dispatchEvent(new window.CustomEvent('manifest:auth:teams-loaded'))
+        await api.getUserGeneratedRoles('t1', appwrite)
+        expect(reads).toEqual(['t1'])
     })
 })

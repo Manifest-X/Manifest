@@ -63,6 +63,14 @@ function initializeAuthStore() {
         try { const saved = JSON.parse(raw || 'null'); return saved?.isAuthenticated ? (saved.user?.$id || null) : null; } catch { return null; }
     }
 
+    // Last signed-in identity this browser mirrored: a hint only, never trusted as identity
+    function persistedIdentity() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+            return saved?.isAuthenticated === true && saved.user?.$id ? { userId: saved.user.$id, isAnonymous: saved.isAnonymous === true } : null;
+        } catch { return null; }
+    }
+
     // Identity this tab is showing data for: while unverified, the last one mirrored
     function shownUserId(store, mirrored) {
         if (store.user?.$id) return store.user.$id;
@@ -204,6 +212,7 @@ function initializeAuthStore() {
         editingMember: null, // Current member being edited: { teamId, membershipId, roles }
         _initialized: false,
         _initializing: false,
+        _initAnnounced: false, // manifest:auth:initialized has fired
         _appwrite: null,
         _guestAuto: false,
         _guestManual: false,
@@ -212,6 +221,7 @@ function initializeAuthStore() {
         _crossTabTeams: null, // latest cross-tab team load; older ones skip their writes
         _teamsEpoch: 0, // bumped by every team reset; an in-flight listTeams from an older one is discarded
         _authEpoch: 0, // bumped by every identity change; an in-flight recheck from an older epoch is dropped
+        _prefetchWaitMs: 3000, // longest the boot teams load waits on its prefetched list
         _recheckTimer: null,
         _recheckAttempt: 0,
         guestManualEnabled: false,
@@ -225,6 +235,7 @@ function initializeAuthStore() {
         _allRolesCacheByTeam: {}, // Cache roles per team ID
         _rolePermanentCache: {}, // Cache permanent role status per team: { teamId: { roleName: true/false } }
         _userGeneratedRolesCache: {},
+        _permissionRefresh: null, // last finished permission refresh: { seq, teamId, memberships }
 
         // Permission cache methods (always available, return safe defaults)
         canInviteMembers() {
@@ -399,6 +410,7 @@ function initializeAuthStore() {
 
             // Hoisted so the post-init background team load (below) can read it.
             let appwriteConfig = null;
+            let earlyTeams = null;
 
             try {
                 const appwrite = await config.getAppwriteClient();
@@ -419,7 +431,9 @@ function initializeAuthStore() {
 
                 // Try to restore existing session
                 try {
-                    await this._restoreSession(appwrite);
+                    const restoring = this._restoreSession(appwrite);
+                    earlyTeams = this._prefetchTeams(appwrite, appwriteConfig);
+                    await restoring;
 
                     // Team loading is deferred (not awaited) — runs in the background after
                     // manifest:auth:initialized so a session gate isn't held up by it.
@@ -460,6 +474,7 @@ function initializeAuthStore() {
 
                 // Fire as soon as identity is known, before teams load, so a session
                 // gate / splash clears in a few hundred ms.
+                this._initAnnounced = true;
                 window.dispatchEvent(new CustomEvent('manifest:auth:initialized', {
                     detail: {
                         isAuthenticated: this.isAuthenticated,
@@ -473,7 +488,9 @@ function initializeAuthStore() {
             if (appwriteConfig && this.isAuthenticated && appwriteConfig.teams
                 && (!this.isAnonymous || appwriteConfig.guestTeams)) {
                 const owner = this.user?.$id;
-                this._loadTeamsAndSeed(appwriteConfig)
+                const prefetched = earlyTeams && earlyTeams.userId === owner && earlyTeams.authEpoch === this._authEpoch
+                    && earlyTeams.teamsEpoch === this._teamsEpoch ? earlyTeams : null;
+                this._loadTeamsAndSeed(appwriteConfig, { prefetched })
                     .then(() => {
                         if (!this.isAuthenticated || this.user?.$id !== owner) return;
                         window.dispatchEvent(new CustomEvent('manifest:auth:teams-loaded', {
@@ -486,8 +503,15 @@ function initializeAuthStore() {
 
         // Adopt the session Appwrite reports (throws when there is none or it is unreachable)
         async _restoreSession(appwrite, isCurrent = () => true) {
-            const user = await appwrite.account.get();
-            const sessionsResponse = await appwrite.account.listSessions();
+            // Both in flight when a session is likely; account.get's error still wins
+            const userRequest = appwrite.account.get();
+            let sessionsRequest = null;
+            if (persistedIdentity()) {
+                try { sessionsRequest = Promise.resolve(appwrite.account.listSessions()); } catch (error) { sessionsRequest = Promise.reject(error); }
+                sessionsRequest.catch(() => { });
+            }
+            const user = await userRequest;
+            const sessionsResponse = await (sessionsRequest || appwrite.account.listSessions());
             if (!isCurrent()) return false;
             this.user = user;
             const allSessions = sessionsResponse.sessions || [];
@@ -532,6 +556,20 @@ function initializeAuthStore() {
                 this.isAnonymous = false;
             }
             return true;
+        },
+
+        // Boot teams list issued alongside the identity check for the mirrored identity; listTeams uses it only for that identity
+        _prefetchTeams(appwrite, cfg) {
+            const hint = persistedIdentity();
+            if (!hint || !cfg?.teams || typeof appwrite?.teams?.list !== 'function') return null;
+            if (hint.isAnonymous && (!cfg.guestTeams || (!this._guestAuto && !this._guestManual))) return null;
+            let request;
+            try {
+                request = Promise.resolve(appwrite.teams.list({ queries: [] })).then(value => ({ value }), error => ({ error }));
+            } catch (error) {
+                return null;
+            }
+            return { userId: hint.userId, authEpoch: this._authEpoch, teamsEpoch: this._teamsEpoch, request, used: false };
         },
 
         // Offline-booted tab: re-run the session check once Appwrite is reachable
@@ -638,7 +676,7 @@ function initializeAuthStore() {
 
         // Load the user's teams and seed configured defaults. Shared by the guest,
         // magic-link, OAuth, and init/restore paths.
-        async _loadTeamsAndSeed(appwriteConfig, { seed = true } = {}) {
+        async _loadTeamsAndSeed(appwriteConfig, { seed = true, prefetched = null } = {}) {
             const cfg = appwriteConfig || await config.getAppwriteConfig();
             if (!cfg?.teams) {
                 return;
@@ -658,7 +696,7 @@ function initializeAuthStore() {
             // Always load the user's real teams. Capture the result — never seed defaults
             // off an unconfirmed team list: a failed/incomplete load must not read as
             // "teamless" and mint a duplicate tenant (the settle-window mis-provision).
-            const loadResult = await this.listTeams();
+            const loadResult = prefetched ? await this.listTeams([], '', { prefetched }) : await this.listTeams();
             if (!needsSeed) {
                 return;
             }

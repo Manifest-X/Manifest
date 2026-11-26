@@ -67,11 +67,7 @@ function initializeTeamsUserRoles() {
                         ...currentPrefs,
                         roles: updatedRoles
                     };
-                    invalidateRolesCache(teamId);
-                    await this._appwrite.teams.updatePrefs({
-                        teamId: teamId,
-                        prefs: updatedPrefs
-                    });
+                    await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
 
                     // Refresh permission cache to update UI
                     if (this.refreshPermissionCache) {
@@ -186,11 +182,7 @@ function initializeTeamsUserRoles() {
                         ...currentPrefs,
                         roles: updatedRoles
                     };
-                    invalidateRolesCache(teamId);
-                    await this._appwrite.teams.updatePrefs({
-                        teamId: teamId,
-                        prefs: updatedPrefs
-                    });
+                    await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
 
                     // Refresh permission cache to update UI
                     if (this.refreshPermissionCache) {
@@ -288,11 +280,7 @@ function initializeTeamsUserRoles() {
                         ...currentPrefs,
                         roles: updatedRoles
                     };
-                    invalidateRolesCache(teamId);
-                    await this._appwrite.teams.updatePrefs({
-                        teamId: teamId,
-                        prefs: updatedPrefs
-                    });
+                    await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
 
                     // Update all memberships that have the old role name to use the new role name
                     // This prevents data drift where role names in memberships don't match role definitions
@@ -454,12 +442,7 @@ function initializeTeamsUserRoles() {
                                     deletedTemplateRoles: deletedRoles
                                 };
 
-                                invalidateRolesCache(teamId);
-
-                                await this._appwrite.teams.updatePrefs({
-                                    teamId: teamId,
-                                    prefs: updatedPrefs
-                                });
+                                await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
                             }
                         } catch (e) {
                             // Fallback to localStorage for backwards compatibility
@@ -491,11 +474,7 @@ function initializeTeamsUserRoles() {
                             ...currentPrefs,
                             roles: updatedRoles
                         };
-                        invalidateRolesCache(teamId);
-                        await this._appwrite.teams.updatePrefs({
-                            teamId: teamId,
-                            prefs: updatedPrefs
-                        });
+                        await writeTeamPrefs(this._appwrite, teamId, updatedPrefs);
                     }
 
                     // Update per-team cache for this specific team (create new object reference for reactivity)

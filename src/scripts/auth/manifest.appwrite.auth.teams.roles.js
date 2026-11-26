@@ -90,40 +90,42 @@ function roleHasAllOwnerPermissions(roleName, memberRoles) {
     return OWNER_PERMISSIONS.every(perm => permissions.includes(perm));
 }
 
-// User-generated roles live in team prefs; one read per team is shared by every permission check
-// for a short window and dropped on any auth change or prefs write
+// Team prefs (user-generated roles, deleted template roles): one read per team shared for a short
+// window; dropped on any identity change, around every prefs write and on a realtime team update
 const ROLES_CACHE_TTL_MS = 15000;
-const rolesCache = new Map();   // teamId -> { at, promise }
+const rolesCache = new Map();   // teamId -> { at, promise of { prefs } | { error } }
 function invalidateRolesCache(teamId) { if (teamId === undefined) rolesCache.clear(); else rolesCache.delete(teamId); }
 if (typeof window !== 'undefined') {
-    ['manifest:auth:login', 'manifest:auth:logout', 'manifest:auth:anonymous', 'manifest:auth:session-cleared', 'manifest:auth:initialized', 'manifest:auth:teams-loaded']
+    ['manifest:auth:login', 'manifest:auth:logout', 'manifest:auth:anonymous', 'manifest:auth:session-cleared', 'manifest:auth:initialized']
         .forEach(type => window.addEventListener(type, () => invalidateRolesCache()));
+}
+
+function readTeamPrefs(teamId, appwrite) {
+    const hit = rolesCache.get(teamId);
+    if (hit && Date.now() - hit.at < ROLES_CACHE_TTL_MS) return hit.promise;
+    let request;
+    try { request = Promise.resolve(appwrite.teams.getPrefs({ teamId })); } catch (error) { request = Promise.reject(error); }
+    const promise = request.then(prefs => ({ prefs }), error => ({ error }));
+    rolesCache.set(teamId, { at: Date.now(), promise });
+    return promise;
+}
+
+async function writeTeamPrefs(appwrite, teamId, prefs) {
+    invalidateRolesCache(teamId);
+    try {
+        return await appwrite.teams.updatePrefs({ teamId, prefs });
+    } finally {
+        invalidateRolesCache(teamId);
+    }
 }
 
 async function getUserGeneratedRoles(teamId, appwrite) {
     if (!appwrite || !appwrite.teams) {
         return null;
     }
-    const hit = rolesCache.get(teamId);
-    if (hit && Date.now() - hit.at < ROLES_CACHE_TTL_MS) return hit.promise;
-    const promise = readUserGeneratedRoles(teamId, appwrite);
-    rolesCache.set(teamId, { at: Date.now(), promise });
-    promise.catch(() => rolesCache.delete(teamId));   // a null result (no custom roles) is a valid, cached answer
-    return promise;
-}
-
-async function readUserGeneratedRoles(teamId, appwrite) {
-    try {
-        const prefs = await appwrite.teams.getPrefs({ teamId });
-        return prefs?.roles || null;
-    } catch (error) {
-        // Prefs may lack roles, or team deleted (404) → null
-        if (error.message && error.message.includes('could not be found')) {
-            return null;
-        }
-        // For other errors, also return null (team preferences might not exist yet)
-        return null;
-    }
+    // A failed read (404, no prefs yet) is "no custom roles"
+    const { prefs } = await readTeamPrefs(teamId, appwrite);
+    return prefs?.roles || null;
 }
 
 // Merge manifest roles with user-generated roles (user-generated overrides manifest)

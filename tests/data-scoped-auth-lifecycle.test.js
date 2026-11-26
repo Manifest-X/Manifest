@@ -1100,7 +1100,8 @@ describe('auth store: a network failure is not a logout', () => {
         const teamsApi = byUser => {
             const api = { calls: [], gates: {} }
             api.list = async store => {
-                const uid = store.user?.$id
+                // Answers for the session's user, like Appwrite; before the store adopts it, sessionUser stands in
+                const uid = store.user?.$id || api.sessionUser
                 api.calls.push(uid)
                 if (api.gates[uid]) await api.gates[uid].p
                 return { teams: (byUser[uid] || []).map($id => ({ $id })), total: (byUser[uid] || []).length }
@@ -1225,6 +1226,7 @@ describe('auth store: a network failure is not a logout', () => {
 
         it("this tab's own init team load landing after a cross-tab switch never shows u1's teams on u2", async () => {
             const api = teamsApi({ u1: ['t1'], u2: ['t2'] })
+            api.sessionUser = 'u1'
             const d = api.hold('u1')
             const initAccount = { ...online('u1'), deleteSession: async () => {} }
             const { store, events, storage } = await boot(noSession, { teams: true, teamsList: api.list, initAccount, mirror: u1 })

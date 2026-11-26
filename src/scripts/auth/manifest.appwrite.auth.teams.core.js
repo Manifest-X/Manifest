@@ -102,7 +102,7 @@ function initializeTeamsCore() {
             };
 
             // List user's teams
-            store.listTeams = async function (queries = [], search = '') {
+            store.listTeams = async function (queries = [], search = '', { prefetched = null } = {}) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
                 }
@@ -128,7 +128,19 @@ function initializeTeamsCore() {
                     if (search && search.trim().length > 0) {
                         params.search = search;
                     }
-                    const result = await this._appwrite.teams.list(params);
+                    // Boot prefetch: only for this identity and epoch, once; a failed or superseded one falls through to a fresh list
+                    let result = null;
+                    if (prefetched && !prefetched.used && Array.isArray(queries) && queries.length === 0 && !params.search
+                        && prefetched.userId === owner && prefetched.teamsEpoch === generation && prefetched.authEpoch === this._authEpoch) {
+                        prefetched.used = true;
+                        // A hung prefetch is abandoned after a bounded wait; its late answer is ignored
+                        let timer;
+                        const early = await Promise.race([prefetched.request, new Promise(r => { timer = setTimeout(() => r({ timedOut: true }), this._prefetchWaitMs ?? 3000); })]);
+                        clearTimeout(timer);
+                        if (stale()) return discarded;
+                        if (!early.timedOut && !early.error && early.value && prefetched.authEpoch === this._authEpoch) result = early.value;
+                    }
+                    if (!result) result = await this._appwrite.teams.list(params);
                     if (stale()) return discarded;
 
                     // Update store with teams
@@ -664,6 +676,8 @@ function initializeTeamsCore() {
                             // Refresh teams list if needed (only once per event batch)
                             // This also refreshes roles/permissions since they're stored in team preferences
                             if (shouldRefreshTeams && !this._teamsRealtimeSubscribing) {
+                                // Prefs may have changed elsewhere
+                                if (typeof invalidateRolesCache === 'function') invalidateRolesCache();
                                 this._teamsRealtimeSubscribing = true;
                                 if (this.listTeams) {
                                     this.listTeams().finally(() => {
@@ -886,6 +900,7 @@ function initializeTeamsCore() {
                 this._teamsPollInterval = setInterval(async () => {
                     if (this.isAuthenticated && this.listTeams) {
                         try {
+                            if (typeof invalidateRolesCache === 'function') invalidateRolesCache();
                             await this.listTeams();
                         } catch (error) {
                             console.warn('[Manifest Appwrite Auth] Teams polling error:', error);
@@ -924,11 +939,7 @@ function initializeTeamsCore() {
                 this.error = null;
 
                 try {
-                    invalidateRolesCache(teamId);
-                    const result = await this._appwrite.teams.updatePrefs({
-                        teamId: teamId,
-                        prefs: prefs
-                    });
+                    const result = await writeTeamPrefs(this._appwrite, teamId, prefs);
 
                     return { success: true, prefs: result };
                 } catch (error) {

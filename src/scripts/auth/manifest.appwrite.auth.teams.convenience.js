@@ -26,6 +26,8 @@ function initializeTeamsConvenience() {
             if (!store._allRolesCacheByTeam) store._allRolesCacheByTeam = {};
             if (!store._userGeneratedRolesCache) store._userGeneratedRolesCache = {};
 
+            const sameMembers = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((m, i) => m === b[i]);
+
             // Update permission cache when team changes
             const updatePermissionCache = async function () {
                 if (!this.currentTeam || !this.currentTeamMemberships || !this.user) {
@@ -38,57 +40,48 @@ function initializeTeamsConvenience() {
                 }
 
                 const teamId = this.currentTeam.$id;
+                const memberships = this.currentTeamMemberships;
                 const permissions = ['inviteMembers', 'updateMembers', 'removeMembers', 'renameTeam', 'deleteTeam', 'manageRoles'];
 
-                // Cache permissions
+                // Computed first, written only if the team and its members are unchanged (a newer refresh owns them otherwise)
+                const permissionCache = {};
                 for (const perm of permissions) {
-                    if (this.hasTeamPermission) {
-                        const hasPerm = await this.hasTeamPermission(perm);
-                        this._permissionCache[perm] = hasPerm;
-                    } else {
-                        this._permissionCache[perm] = false;
-                    }
+                    permissionCache[perm] = this.hasTeamPermission ? await this.hasTeamPermission(perm) : false;
                 }
+                const userRole = this.getUserRole ? await this.getUserRole() : null;
 
-                // Cache user role
-                if (this.getUserRole) {
-                    this._userRoleCache = await this.getUserRole();
-                } else {
-                    this._userRoleCache = null;
-                }
-
-                // Cache all roles
+                let rolesCopy = {};
+                const userGenerated = {};
                 if (this.getAllRoles) {
                     const allRoles = await this.getAllRoles(teamId);
-                    // Create new object reference to ensure Alpine reactivity
-                    const rolesCopy = allRoles ? { ...allRoles } : {};
-                    this._allRolesCache = rolesCopy;
-                    // Also cache by team ID for per-team lookups (create new object reference)
-                    if (!this._allRolesCacheByTeam) this._allRolesCacheByTeam = {};
-                    this._allRolesCacheByTeam[teamId] = { ...rolesCopy };
+                    rolesCopy = allRoles ? { ...allRoles } : {};
 
                     // Pre-populate permanent role cache for all roles (for isRoleDeletable to work)
                     if (!this._rolePermanentCache) this._rolePermanentCache = {};
                     if (!this._rolePermanentCache[teamId]) this._rolePermanentCache[teamId] = {};
                     if (this.isRolePermanent) {
                         for (const roleName of Object.keys(rolesCopy)) {
-                            // Pre-cache permanent status for all roles
                             await this.isRolePermanent(teamId, roleName);
                         }
                     }
 
-                    // Cache which roles are user-generated (always check, no feature flag needed)
-                    this._userGeneratedRolesCache = {};
-                    if (this._allRolesCache && this.isUserGeneratedRole) {
-                        for (const roleName of Object.keys(this._allRolesCache)) {
-                            this._userGeneratedRolesCache[roleName] = await this.isUserGeneratedRole(teamId, roleName);
+                    // Which roles are user-generated
+                    if (this.isUserGeneratedRole) {
+                        for (const roleName of Object.keys(rolesCopy)) {
+                            userGenerated[roleName] = await this.isUserGeneratedRole(teamId, roleName);
                         }
                     }
-                } else {
-                    this._allRolesCache = {};
-                    if (!this._allRolesCacheByTeam) this._allRolesCacheByTeam = {};
-                    this._allRolesCacheByTeam[teamId] = {};
                 }
+
+                // Per-team roles are correct for their key either way
+                if (!this._allRolesCacheByTeam) this._allRolesCacheByTeam = {};
+                this._allRolesCacheByTeam[teamId] = { ...rolesCopy };
+                if (this.currentTeam?.$id !== teamId || !sameMembers(memberships, this.currentTeamMemberships)) return;
+                this._permissionCache = permissionCache;
+                this._userRoleCache = userRole;
+                this._allRolesCache = rolesCopy;
+                this._userGeneratedRolesCache = userGenerated;
+                this._permissionRefresh = { seq: (this._permissionRefresh?.seq || 0) + 1, teamId, memberships };
             };
 
             // Public method to refresh permission cache
@@ -318,7 +311,8 @@ function initializeTeamsConvenience() {
                     }
                     if (team && team.$id && this.listMemberships) {
                         const result = await this.listMemberships(team.$id);
-                        if (result.success) {
+                        // A later viewTeam owns the members list once it has switched team
+                        if (result.success && this.currentTeam?.$id === team.$id) {
                             this.currentTeamMemberships = result.memberships || [];
                         }
                     }
@@ -861,9 +855,13 @@ function initializeTeamsConvenience() {
             if (store.viewTeam && !store._viewTeamWrapped) {
                 const originalViewTeam = store.viewTeam;
                 store.viewTeam = async function (team) {
+                    const before = this._permissionRefresh?.seq || 0;
                     const result = await originalViewTeam.call(this, team);
-                    // Update cache after viewing team (which loads memberships)
-                    if (updatePermissionCache) {
+                    // listMemberships refreshes for the current team; refresh here only if that did not cover this team and these members
+                    const last = this._permissionRefresh;
+                    const covered = !!(last && last.seq > before && team?.$id && this.currentTeam?.$id === team.$id
+                        && last.teamId === team.$id && sameMembers(last.memberships, this.currentTeamMemberships));
+                    if (!covered && updatePermissionCache) {
                         await updatePermissionCache.call(this);
                     }
                     // Update available permissions for autocomplete
