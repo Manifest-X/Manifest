@@ -193,9 +193,11 @@ function initializeTeamsCore() {
 
                     // Load deleted template roles for current team (if roles defaults module is loaded)
                     if (this.currentTeam && this.currentTeam.$id && window.ManifestAppwriteAuthTeamsRolesDefaults && this.getDeletedTemplateRoles) {
-                        const deletedTemplateRoles = await this.getDeletedTemplateRoles(this.currentTeam.$id);
+                        const rolesTeamId = this.currentTeam.$id;
+                        const deletedTemplateRoles = await this.getDeletedTemplateRoles(rolesTeamId);
                         if (stale()) return discarded;
-                        this.deletedTemplateRoles = deletedTemplateRoles;
+                        // Another team may have been viewed meanwhile; its own load owns this
+                        if (this.currentTeam?.$id === rolesTeamId) this.deletedTemplateRoles = deletedTemplateRoles;
                     }
 
                     // Set currentTeam to first default team if available and not already set
@@ -205,32 +207,31 @@ function initializeTeamsCore() {
                             (appwriteConfig?.templateTeams && Array.isArray(appwriteConfig.templateTeams) && appwriteConfig.templateTeams.length > 0);
 
                         if (stale()) return discarded;
+                        // A team the app viewed during these awaits wins over the default pick
                         if (hasDefaultTeams && window.ManifestAppwriteAuthTeamsDefaults && this.getDefaultTeams) {
                             const defaultTeams = await this.getDefaultTeams();
                             if (stale()) return discarded;
-                            if (defaultTeams.length > 0) {
-                                this.currentTeam = defaultTeams[0];
-                            } else {
-                                this.currentTeam = this.teams[0];
-                            }
-                        } else {
+                            if (!this.currentTeam) this.currentTeam = defaultTeams.length > 0 ? defaultTeams[0] : this.teams[0];
+                        } else if (!this.currentTeam) {
                             this.currentTeam = this.teams[0];
                         }
                     }
 
                     // Auto-load memberships for current team (if members module is loaded)
                     if (this.currentTeam && this.currentTeam.$id && window.ManifestAppwriteAuthTeamsMembers && this.listMemberships) {
+                        // Written only while that team is still current: a viewTeam meanwhile owns the list
+                        const membersTeamId = this.currentTeam.$id;
                         try {
-                            const membershipsResult = await this.listMemberships(this.currentTeam.$id);
+                            const membershipsResult = await this.listMemberships(membersTeamId);
                             if (stale()) return discarded;
-                            if (membershipsResult.success) {
+                            if (membershipsResult.success && this.currentTeam?.$id === membersTeamId) {
                                 this.currentTeamMemberships = membershipsResult.memberships || [];
                             }
                         } catch (error) {
                             // Silently handle errors (e.g., team was deleted)
                             // listMemberships already handles "team not found" gracefully
                             if (stale()) return discarded;
-                            this.currentTeamMemberships = [];
+                            if (this.currentTeam?.$id === membersTeamId) this.currentTeamMemberships = [];
                         }
                     }
 
@@ -360,8 +361,8 @@ function initializeTeamsCore() {
                             // Use Alpine's nextTick if available to ensure reactivity is triggered
                             if (typeof Alpine !== 'undefined' && Alpine.nextTick) {
                                 Alpine.nextTick(() => {
-                                    // Ensure the update is visible
-                                    this.currentTeam = refreshedTeam;
+                                    // Ensure the update is visible, unless another team was viewed meanwhile
+                                    if (this.currentTeam?.$id === teamId) this.currentTeam = refreshedTeam;
                                 });
                             }
                         }

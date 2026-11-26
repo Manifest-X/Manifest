@@ -315,6 +315,11 @@ function initializeTeamsConvenience() {
                         if (result.success && this.currentTeam?.$id === team.$id) {
                             this.currentTeamMemberships = result.memberships || [];
                         }
+                        // Deleted template roles are per team too (shared prefs read, no extra request)
+                        if (this.getDeletedTemplateRoles && window.ManifestAppwriteAuthTeamsRolesDefaults) {
+                            const deleted = await this.getDeletedTemplateRoles(team.$id);
+                            if (this.currentTeam?.$id === team.$id) this.deletedTemplateRoles = deleted;
+                        }
                     }
                     return { success: true };
                 };
@@ -866,7 +871,8 @@ function initializeTeamsConvenience() {
                     }
                     // Update available permissions for autocomplete
                     if (this.getAllAvailablePermissions && team && team.$id) {
-                        this.allAvailablePermissions = await this.getAllAvailablePermissions(team.$id);
+                        const available = await this.getAllAvailablePermissions(team.$id);
+                        if (this.currentTeam?.$id === team.$id) this.allAvailablePermissions = available;
                     }
                     return result;
                 };

@@ -321,8 +321,8 @@ function initializeTeamsMembers() {
                 this._updatingMember = membershipId;
                 this.error = null;
 
-                // Optimistically update the UI immediately
-                if (this.currentTeamMemberships && Array.isArray(this.currentTeamMemberships)) {
+                // Optimistically update the UI immediately (only the current team's list is shown)
+                if (this.currentTeam?.$id === teamId && this.currentTeamMemberships && Array.isArray(this.currentTeamMemberships)) {
                     const membershipIndex = this.currentTeamMemberships.findIndex(m => m.$id === membershipId);
                     if (membershipIndex >= 0) {
                         // Optimistically update membership with new roles
@@ -457,8 +457,8 @@ function initializeTeamsMembers() {
                 this._deletingMember = membershipId;
                 this.error = null;
 
-                // Optimistically remove member from UI immediately
-                if (this.currentTeamMemberships && Array.isArray(this.currentTeamMemberships)) {
+                // Optimistically remove member from UI immediately (only the current team's list is shown)
+                if (this.currentTeam?.$id === teamId && this.currentTeamMemberships && Array.isArray(this.currentTeamMemberships)) {
                     this.currentTeamMemberships = this.currentTeamMemberships.filter(m => m.$id !== membershipId);
                 }
 
