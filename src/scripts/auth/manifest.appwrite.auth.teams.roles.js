@@ -246,9 +246,9 @@ function hasPermission(userRoles, permission, memberRoles, userGeneratedRoles = 
     // alongside them, but permissions must stay limited to the custom role(s).
     const customRoles = userRoles.filter(role => role !== 'owner');
 
-    // No custom roles (deleted or never assigned) → full owner permissions
+    // Only Appwrite's owner role (no custom role) → full owner permissions; no roles at all → none
     if (customRoles.length === 0) {
-        return true;
+        return userRoles.includes('owner');
     }
 
     // Check if any of the user's custom roles has this permission. Match by slug so

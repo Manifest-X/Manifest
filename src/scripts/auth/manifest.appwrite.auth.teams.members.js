@@ -124,6 +124,7 @@ function initializeTeamsMembers() {
                 }
 
                 try {
+                    const ownQueries = !!(queries && queries.length);
                     // A listing with no queries of its own uses auth.teams.memberLimit when set
                     if (!queries || queries.length === 0) {
                         const memberQueries = this._memberQueries ? this._memberQueries(await config.getAppwriteConfig()) : [];
@@ -262,6 +263,11 @@ function initializeTeamsMembers() {
                         }
                     }
 
+                    // Roles come from the user's own membership, even when this page does not include it
+                    if (this.currentTeam?.$id === teamId && this._resolveOwnMembership) {
+                        await this._resolveOwnMembership(teamId, memberships, result.total || 0, ownQueries || !!params.search);
+                    }
+
                     // Update currentTeamMemberships if this is the current team
                     // Use spread operator to create new array reference for Alpine reactivity
                     if (this.currentTeam && this.currentTeam.$id === teamId) {
@@ -330,9 +336,9 @@ function initializeTeamsMembers() {
 
                 // Check if user has updateMembers permission (required for updating other members' roles)
                 // Users can always update their own roles
-                const isUpdatingSelf = this.user && this.currentTeamMemberships?.some(
+                const isUpdatingSelf = !!this.user && (this.currentTeamMemberships?.some(
                     m => m.$id === membershipId && m.userId === this.user.$id
-                );
+                ) || (this.currentTeam?.$id === teamId && this._currentMembership?.()?.$id === membershipId));
 
                 if (!isUpdatingSelf) {
                     // Updating another member - requires permission
@@ -466,9 +472,9 @@ function initializeTeamsMembers() {
 
                 // Check if user has removeMembers permission (unless removing themselves)
                 // Note: Users can always leave a team themselves, but need permission to remove others
-                const isRemovingSelf = this.user && this.currentTeamMemberships?.some(
+                const isRemovingSelf = !!this.user && (this.currentTeamMemberships?.some(
                     m => m.$id === membershipId && m.userId === this.user.$id
-                );
+                ) || (this.currentTeam?.$id === teamId && this._currentMembership?.()?.$id === membershipId));
 
                 if (!isRemovingSelf) {
                     // Removing another member - requires permission
