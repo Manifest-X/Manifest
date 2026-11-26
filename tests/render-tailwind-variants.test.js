@@ -22,7 +22,7 @@ const shell = (head = '') => `<!DOCTYPE html><html><head>${head}
 
 describe('Tailwind CLI variants', () => {
     it('match injectTailwindVariants() in the live framework', () => {
-        const src = readFileSync(join(repo, 'src/scripts/utilities/manifest.utilities.init.js'), 'utf8');
+        const src = readFileSync(join(repo, 'lib/manifest.utilities.js'), 'utf8');
         const live = [...src.matchAll(/'(@custom-variant [^']+)'/g)].map(m => m[1]);
         expect(live).toEqual([...TAILWIND_CUSTOM_VARIANTS, TAILWIND_DARK_VARIANT]);
     });

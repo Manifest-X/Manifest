@@ -51,6 +51,7 @@ const CONFIG = {
 
     // Utilities subscripts order
     utilitiesSubscripts: [
+        '../manifest.tailwind.variants.mjs',
         'manifest.utilities.generators.js',
         'manifest.utilities.variants.js',
         'manifest.utilities.main.js',
@@ -68,6 +69,7 @@ const CONFIG = {
     // DOM-free subset combined into manifest.utilities.node.mjs (Node/Workers,
     // no document): generation logic only, no DOM/localStorage subscripts.
     utilitiesNodeSubscripts: [
+        '../manifest.tailwind.variants.mjs',
         'manifest.utilities.generators.js',
         'manifest.utilities.variants.js',
         'manifest.utilities.main.js',
@@ -672,6 +674,12 @@ function handleGroupDependentFiles() {
     console.log('');
 }
 
+// Shared ES modules (.mjs) are inlined as bare declarations
+function readSubscript(filePath) {
+    const content = fs.readFileSync(filePath, 'utf8');
+    return filePath.endsWith('.mjs') ? content.replace(/^export (?=const |function |class )/gm, '') : content;
+}
+
 // Combine subscripts into a single file
 function combineSubscripts(subscriptFiles, outputFile, systemName) {
     console.log(`Building ${systemName} monolith...`);
@@ -684,7 +692,7 @@ function combineSubscripts(subscriptFiles, outputFile, systemName) {
     for (const file of subscriptFiles) {
         const filePath = path.join(componentDir, file);
         if (fs.existsSync(filePath)) {
-            const content = fs.readFileSync(filePath, 'utf8');
+            const content = readSubscript(filePath);
             combinedContent.push(content);
             console.log(`  ✓ Added ${file}`);
             filesFound++;
@@ -752,7 +760,7 @@ function buildUtilitiesNodeModule() {
     for (const file of CONFIG.utilitiesNodeSubscripts) {
         const filePath = path.join(componentDir, file);
         if (fs.existsSync(filePath)) {
-            core.push(fs.readFileSync(filePath, 'utf8'));
+            core.push(readSubscript(filePath));
             console.log(`  ✓ Added ${file}`);
         } else {
             console.warn(`  ⚠ Warning: ${file} not found`);

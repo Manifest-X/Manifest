@@ -6,7 +6,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageRoot = join(__dirname, '..');
 const repoRoot = join(packageRoot, '..', '..');
 
-for (const name of ['manifest.render.mjs', 'manifest.render.page.mjs']) {
+for (const name of ['manifest.render.mjs', 'manifest.render.page.mjs', 'manifest.tailwind.variants.mjs']) {
   const source = join(repoRoot, 'src', 'scripts', name);
   const target = join(packageRoot, name);
   copyFileSync(source, target);
