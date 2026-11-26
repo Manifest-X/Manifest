@@ -141,6 +141,7 @@ const EXTRA_PAGES = {
     expanded: (r) => extraList(r, '<span class="ex" :aria-expanded="row.ex ? \'true\' : \'false\'" x-text="row.ex ? \'expanded\' : \'collapsed\'"></span>'),
     // Context menus outside the list (manual popovers): a row hosting an open one is busy
     ctx: (r) => extraList(r, '', { rowAttrs: 'x-dropdown.context="ctxmenu"', scripts: DROPDOWNS, after: '<menu id="ctxmenu"><li class="ci">act</li></menu>' }),
+    ctxtele: (r) => extraList(r, '<template x-teleport="body"><div class="tt" :data-for="row.name" x-dropdown.context="ctxmenu2" x-text="\'tele \' + row.name"></div></template>', { scripts: DROPDOWNS, after: '<menu id="ctxmenu2"><li>act</li></menu>' }),
     ctxdyn: (r) => extraList(r, '', { rowAttrs: 'x-dropdown.context="`ctx-${row.slot % 2}`"', scripts: DROPDOWNS, after: '<menu id="ctx-0"><li>c0</li></menu><menu id="ctx-1"><li>c1</li></menu>' }),
     initnested: (r) => extraList(r, '<em x-init="$el.dataset.born = row.name" @manifest:virtual-recycle="$el.dataset.born = row.name">i</em>'),
     initmod: (r) => extraList(r, '', { rowAttrs: 'x-init.once="$el.dataset.born = row.name"' }),
@@ -612,6 +613,19 @@ async function main() {
                 const res = await p.evaluate(async () => { await T.go(3000 + 18000); await frames_(2); return { connected: window.__ctxRow.isConnected, open: [...document.querySelectorAll(':popover-open')].map((m) => m.id), hosts: (window.__mnfstContextHosts?.() || []).length, errs: T.check().errs } })
                 check(before.open[0] === 'ctxmenu' && before.busy && !res.connected && res.open.length === 0 && res.hosts === 0 && res.errs.length === 0, `x-dropdown.context, recycle ${r ? 'on' : 'off'}: scrolling away destroys the hosting row and closes its menu`, { before, res })
                 await done(p, `x-dropdown.context scroll away, recycle ${r ? 'on' : 'off'}`)
+            }
+            // A context trigger the row teleported out counts as the row's
+            for (const r of [1, 0]) {
+                const p = await openExtra('ctxtele', r)
+                const n = await p.evaluate(async () => { await T.go(3000); const row = T.rows()[4]; window.__ctxRow = row; window.__ctxTele = row.querySelector('template[x-teleport]')._x_teleport; return row.dataset.n })
+                await p.click(`.tt[data-for="${n}"]`, { button: 'right' }); await settle(p)
+                const res = await p.evaluate(async () => {
+                    const before = { open: [...document.querySelectorAll(':popover-open')].map((m) => m.id), hosted: (window.__mnfstContextHosts?.() || []).some((h) => window.__ctxTele.contains(h)) }
+                    await T.go(3000 + 27000); await frames_(2)
+                    return { before, row: window.__ctxRow.isConnected, tele: window.__ctxTele.isConnected, open: [...document.querySelectorAll(':popover-open')].map((m) => m.id), errs: T.check().errs }
+                })
+                check(res.before.open[0] === 'ctxmenu2' && res.before.hosted && !res.row && !res.tele && res.open.length === 0 && res.errs.length === 0, `x-dropdown.context on teleported row content, recycle ${r ? 'on' : 'off'}: scrolling away destroys the row and closes its menu`, res)
+                await done(p, `x-dropdown.context teleported, recycle ${r ? 'on' : 'off'}`)
             }
             // Every close path clears the busy state; the row then recycles normally
             const paths = {

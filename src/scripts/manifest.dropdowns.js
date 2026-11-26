@@ -63,7 +63,9 @@ const openContext = new Set();
 window.__mnfstContextHosts = () => {
     const out = [];
     for (const m of openContext) {
-        if (!m.isConnected || !m.matches(':popover-open') || !m._triggerHost) { openContext.delete(m); continue; }
+        let open = false;
+        try { open = m.matches(':popover-open'); } catch (_) { }
+        if (!m.isConnected || !open || !m._triggerHost) { openContext.delete(m); continue; }
         out.push(m._triggerHost);
         if (m._triggerEl && m._triggerEl !== m._triggerHost) out.push(m._triggerEl);
     }

@@ -540,6 +540,7 @@ function initializeVirtualPlugin() {
                 for (const t of n.querySelectorAll('template[x-teleport]')) {
                     const c = t._x_teleport;
                     if (c && (c.contains(a) || holdsOpen(c))) return false;
+                    if (ctxHosts && c) for (const h of ctxHosts) if (c.contains(h)) return false;
                 }
             }
             return !holdsOpen(n);
