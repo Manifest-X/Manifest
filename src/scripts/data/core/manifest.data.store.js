@@ -74,7 +74,7 @@ const rowKey = (row) => (row && typeof row === 'object' && (typeof row.$id === '
     : null;
 
 // $id -> position per source array; rebuilt when the array's length moved or a hit no longer matches
-const rowIndexes = new WeakMap(); // raw array -> { map, len }
+const rowIndexes = new WeakMap(); // raw array -> { map, len, dup }
 
 function buildRowIndex(arr) {
     const map = new Map();
