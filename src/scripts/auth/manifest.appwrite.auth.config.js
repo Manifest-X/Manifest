@@ -313,6 +313,8 @@ async function ensureManifest() {
     }
 }
 
+let memberLimitWarned = false;
+
 // Get Appwrite config from manifest
 async function getAppwriteConfig() {
     const manifest = await ensureManifest();
@@ -352,6 +354,17 @@ async function getAppwriteConfig() {
     const permanentTeams = appwriteConfig.auth?.teams?.permanent || null; // immutable
     const templateTeams = appwriteConfig.auth?.teams?.template || null; // deletable + reappliable
     const teamsPollInterval = appwriteConfig.auth?.teams?.pollInterval || null; // ms, null = disabled
+    // Page size of the framework's own member listings: an integer in Appwrite's 1-5000, else Appwrite's default
+    const rawMemberLimit = appwriteConfig.auth?.teams?.memberLimit;
+    let memberLimit = null;
+    if (rawMemberLimit !== undefined && rawMemberLimit !== null && rawMemberLimit !== '') {
+        const n = typeof rawMemberLimit === 'number' || typeof rawMemberLimit === 'string' ? Number(rawMemberLimit) : NaN;
+        if (Number.isInteger(n) && n >= 1 && n <= 5000) memberLimit = n;
+        else if (!memberLimitWarned) {
+            memberLimitWarned = true;
+            console.warn('[Manifest Appwrite Auth] auth.teams.memberLimit must be an integer from 1 to 5000; using Appwrite\'s default:', rawMemberLimit);
+        }
+    }
     // Coerce a config boolean that may arrive as an interpolated string. `${VAR}`
     // placeholders resolve to strings, so a bare !! would read "false" as truthy and
     // break per-environment config (e.g. teams.guests via `${PUBLIC_GUESTS}`).
@@ -416,6 +429,7 @@ async function getAppwriteConfig() {
         permanentTeams: permanentTeams,
         templateTeams: templateTeams,
         teamsPollInterval: teamsPollInterval,
+        memberLimit: memberLimit,
         guestTeams: guestTeams,
         authenticatedTeams: authenticatedTeams, // seed defaults for authenticated sessions (default true)
         guestUpgrade: guestUpgrade,

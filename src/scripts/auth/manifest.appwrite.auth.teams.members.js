@@ -124,6 +124,11 @@ function initializeTeamsMembers() {
                 }
 
                 try {
+                    // A listing with no queries of its own uses auth.teams.memberLimit when set
+                    if (!queries || queries.length === 0) {
+                        const memberLimit = (await config.getAppwriteConfig())?.memberLimit;
+                        if (memberLimit && window.Appwrite?.Query?.limit) queries = [window.Appwrite.Query.limit(memberLimit)];
+                    }
                     const params = {
                         teamId: teamId,
                         queries: queries
@@ -244,6 +249,7 @@ function initializeTeamsMembers() {
                     // Use spread operator to create new array reference for Alpine reactivity
                     if (this.currentTeam && this.currentTeam.$id === teamId) {
                         this.currentTeamMemberships = [...memberships];
+                        this.currentTeamMembershipsTotal = result.total || memberships.length;
                         // Refresh permission cache after loading memberships
                         if (this.refreshPermissionCache) {
                             await this.refreshPermissionCache();
@@ -257,6 +263,7 @@ function initializeTeamsMembers() {
                         // Silently return empty memberships for deleted teams
                         if (this.currentTeam && this.currentTeam.$id === teamId) {
                             this.currentTeamMemberships = [];
+                            this.currentTeamMembershipsTotal = 0;
                         }
                         return { success: true, memberships: [], total: 0 };
                     }

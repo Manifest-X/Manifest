@@ -201,6 +201,12 @@ function initializeAuthStore() {
         inviteEmail: '',
         inviteRoles: [], // Array of selected roles for checkboxes
         currentTeamMemberships: [],
+        currentTeamMembershipsTotal: 0, // Appwrite's total for the current team's last listing
+        // Last listed membership id while more remain: pass to Query.cursorAfter for the next page
+        get currentTeamMembershipsCursor() {
+            const list = this.currentTeamMemberships || [];
+            return list.length && list.length < (this.currentTeamMembershipsTotal || 0) ? list[list.length - 1].$id : null;
+        },
         deletedTemplateTeams: [],
         deletedTemplateRoles: [], // Deleted template roles (can be reapplied)
         _teamImmutableCache: {},
@@ -621,6 +627,7 @@ function initializeAuthStore() {
             this.teams = [];
             this.currentTeam = null;
             this.currentTeamMemberships = [];
+            this.currentTeamMembershipsTotal = 0;
             this.deletedTemplateTeams = [];
             this.deletedTemplateRoles = [];
             this._teamImmutableCache = {};

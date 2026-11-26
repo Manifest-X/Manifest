@@ -129,8 +129,10 @@ export function boot({ cfg, responder, persisted = null, search = '', realtime =
     for (const type of ['initialized', 'teams-loaded', 'login', 'logout', 'anonymous', 'session-cleared']) {
         target.addEventListener(`manifest:auth:${type}`, () => events.push({ type, store: stores.auth && snapshot(stores.auth) }))
     }
+    ctx.Appwrite = { Query: { limit: n => JSON.stringify({ method: 'limit', values: [n] }) } }
     if (data) {
         ctx.Appwrite = {
+            ...ctx.Appwrite,
             Client: class {},
             Account: class { get() { return fake.appwrite.account.get() } },
             TablesDB: class { listRows(a) { return fake.appwrite.tables.listRows(a) } },
