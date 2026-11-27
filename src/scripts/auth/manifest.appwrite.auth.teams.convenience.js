@@ -151,7 +151,7 @@ function initializeTeamsConvenience() {
                         ? this.inviteRoles.filter(r => r && typeof r === 'string')
                         : [];
 
-                    // If no roles specified, use empty array (will default to "owner" in inviteMember)
+                    // No roles: refused by inviteMember when custom roles exist, else sent as "owner"
                     const result = await this.inviteMember(this.currentTeam.$id, roles, email);
                     if (result.success) {
                         this.inviteEmail = ''; // Clear inputs

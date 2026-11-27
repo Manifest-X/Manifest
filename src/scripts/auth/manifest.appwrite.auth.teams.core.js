@@ -584,14 +584,14 @@ function initializeTeamsCore() {
                                 try {
                                     const roles = Array.isArray(membership.roles)
                                         ? membership.roles
-                                        : (membership.roles ? [membership.roles] : ['owner']);
+                                        : (membership.roles ? [membership.roles] : []);
 
-                                    // Use email if available, otherwise userId
+                                    // Use email if available, otherwise userId; a role-less member stays role-less
                                     const email = membership.email || membership.userEmail;
                                     if (email) {
-                                        await this.inviteMember(newTeamId, roles, email);
+                                        await this.inviteMember(newTeamId, roles, email, null, null, null, null, { allowNoRoles: true });
                                     } else if (membership.userId) {
-                                        await this.inviteMember(newTeamId, roles, null, membership.userId);
+                                        await this.inviteMember(newTeamId, roles, null, membership.userId, null, null, null, { allowNoRoles: true });
                                     }
                                 } catch (inviteError) {
                                     // Log but continue with other members

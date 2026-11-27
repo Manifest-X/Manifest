@@ -29,7 +29,7 @@ function initializeTeamsMembers() {
         const store = Alpine.store('auth');
         if (store && !store.inviteMember) {
             // Invite member to team
-            store.inviteMember = async function (teamId, roles, email = null, userId = null, phone = null, url = null, name = null) {
+            store.inviteMember = async function (teamId, roles, email = null, userId = null, phone = null, url = null, name = null, { allowNoRoles = false } = {}) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
                 }
@@ -59,6 +59,19 @@ function initializeTeamsMembers() {
                     // Ensure roles is an array
                     let rolesArray = Array.isArray(roles) ? roles : (roles ? [roles] : []);
 
+                    // With custom roles defined, a role-less invite is refused rather than sent as owner
+                    let hasCustomRoles = false;
+                    if (rolesArray.length === 0) {
+                        const appwriteConfig = await config.getAppwriteConfig();
+                        const teamRoles = this.getUserGeneratedRoles ? await this.getUserGeneratedRoles(teamId) : null;
+                        hasCustomRoles = Object.keys(appwriteConfig?.memberRoles || {}).length > 0
+                            || Object.keys(teamRoles || {}).length > 0;
+                        if (hasCustomRoles && !allowNoRoles) {
+                            this.error = 'Choose at least one role for this invite';
+                            return { success: false, error: this.error };
+                        }
+                    }
+
                     // Normalize roles for Appwrite (add "owner" if custom roles require it)
                     let normalizedRoles = rolesArray;
                     if (this.normalizeRolesForAppwrite && rolesArray.length > 0) {
@@ -66,7 +79,7 @@ function initializeTeamsMembers() {
                     }
 
                     // If no roles provided, use default "owner" role (Appwrite requires at least one role)
-                    if (!normalizedRoles || normalizedRoles.length === 0) {
+                    if ((!normalizedRoles || normalizedRoles.length === 0) && !hasCustomRoles) {
                         normalizedRoles = ['owner'];
                     }
 

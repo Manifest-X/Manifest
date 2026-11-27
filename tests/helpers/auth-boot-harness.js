@@ -62,7 +62,7 @@ export function fakeAppwrite(responder) {
     }
     const appwrite = {
         account: Object.fromEntries(['get', 'listSessions', 'deleteSession', 'createAnonymousSession', 'listIdentities', 'createSession', 'getSession'].map(n => [n, call(`account.${n}`)])),
-        teams: Object.fromEntries(['list', 'listMemberships', 'getPrefs', 'updatePrefs', 'get', 'create', 'delete', 'updateMembership'].map(n => [n, call(`teams.${n}`)])),
+        teams: Object.fromEntries(['list', 'listMemberships', 'getPrefs', 'updatePrefs', 'get', 'create', 'delete', 'updateMembership', 'createMembership', 'updateMembershipStatus'].map(n => [n, call(`teams.${n}`)])),
         tables: { listRows: call('tables.listRows') },
         client: { id: 'client' },
         realtime: null,
