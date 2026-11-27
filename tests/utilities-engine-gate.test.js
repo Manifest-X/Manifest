@@ -85,7 +85,7 @@ describe('arming', () => {
 describe('tokens', () => {
     it('known tokens, sheet classes, ignored and framework state classes need nothing', async () => {
         const { compiler, gate } = await boot({
-            bodyHtml: '<div class="flex card p-4 md:flex x-cloak-ish dark active"><pre><code class="hljs language-js">x</code></pre></div>'
+            bodyHtml: '<div class="flex card p-4 md:flex x-cloak-ish dark active iconify"><pre><code class="hljs language-js">x</code></pre></div>'
         })
         document.documentElement.classList.add('dark')
         add('<div class="gap-4 copied"></div>')
@@ -152,6 +152,53 @@ describe('tokens', () => {
         add('<div class="expand hljs-keyword language-ts"></div>')
         await settle()
         expect(gate.needEngine).not.toHaveBeenCalled()
+    })
+})
+
+describe('which tokens could need the engine', () => {
+    const asked = async (tokens) => {
+        const { gate } = await boot({ bodyHtml: '<div class="flex"></div>' })
+        const out = []
+        for (const t of tokens) {
+            gate.trigger = null
+            gate.needEngine.mockClear()
+            const d = document.createElement('div')
+            d.setAttribute('class', t)
+            document.body.appendChild(d)
+            await settle(2)
+            out.push(gate.needEngine.mock.calls.length > 0)
+        }
+        return out
+    }
+
+    it('bare words the engine has no utility for never ask (framework hooks, author hooks, junk)', async () => {
+        const words = ['iconify', 'prompt', 'prompt_', 'false', 'card', 'toast', 'row', 'col', 'dark', 'light', 'active', 'colorpicker', 'gradient', 'hue', 'alpha', 'solid', 'library']
+        expect(await asked(words)).toEqual(words.map(() => false))
+    })
+
+    it('bare utilities the engine has always ask when the bake did not see them', async () => {
+        const words = ['hidden', 'grow', 'container', 'shadow', 'truncate', 'italic', 'sticky', 'rounded', 'underline', 'transition']
+        expect(await asked(words)).toEqual(words.map(() => true))
+    })
+
+    it('tokens that cannot be candidates never ask', async () => {
+        const junk = ['for=', 'name=', '"quoted', "it's", 'a{b}', 'x;y', 'f(x', 'a]b', '`tpl`', 'a,b', '<b>', '${x}']
+        expect(await asked(junk)).toEqual(junk.map(() => false))
+    })
+
+    it('arbitrary values with = or quotes inside brackets still ask', async () => {
+        const real = ["content-['x']", 'data-[state=open]:flex', '[&_a]:underline', 'bg-(--brand)', 'w-[calc(100%-1rem)]']
+        expect(await asked(real)).toEqual(real.map(() => true))
+    })
+
+    it('framework classes the engine emits nothing for never ask', async () => {
+        const fw = ['tabs-wrapper', 'color-icon-solid', 'gradient-layer-icon-linear', 'toast-entry', 'window-resizing', 'range-start', 'no-scrollbar', 'p-safe']
+        expect(await asked(fw)).toEqual(fw.map(() => false))
+    })
+
+    it('runtime Tailwind classes the bake missed ask', async () => {
+        const real = ['!text-white', 'dark:!bg-pink-900', '!gap-0', 'h-112', 'bg-stone-600', 'font-sans', '[&_strong]:-ml-1', '-mt-2', 'md:hidden', 'hover:underline']
+        expect(await asked(real)).toEqual(real.map(() => true))
     })
 })
 

@@ -8,7 +8,8 @@ import { glob } from 'glob';
 import cssnano from 'cssnano';
 import postcss from 'postcss';
 import { inlineSubscript } from './build.subscript.mjs';
-import { tailwindSeed } from './manifest.tailwind.variants.mjs';
+import { tailwindSeed, TAILWIND_ENGINE_INPUT } from './manifest.tailwind.variants.mjs';
+import { createRequire } from 'module';
 
 // Package version (stamped into the data bundle)
 const BUILD_VERSION = JSON.parse(fs.readFileSync(path.join('..', 'package.json'), 'utf8')).version;
@@ -777,6 +778,71 @@ function buildUtilitiesNodeModule() {
     console.log('  ✓ Created manifest.utilities.node.mjs\n');
 }
 
+// Engine-skip gate lists, from the installed tailwindcss (pinned to the bundled engine's version) with Manifest's variants
+async function engineGateLists() {
+    const require = createRequire(import.meta.url);
+    const tw = require('tailwindcss');
+    const installed = require('tailwindcss/package.json').version;
+    if (installed !== TAILWIND_ENGINE_VERSION) throw new Error(`tailwindcss ${installed} != bundled engine ${TAILWIND_ENGINE_VERSION}`);
+    const themeCss = fs.readFileSync(require.resolve('tailwindcss/theme.css'), 'utf8');
+    const utilitiesCss = fs.readFileSync(require.resolve('tailwindcss/utilities.css'), 'utf8');
+    const ds = await tw.__unstable__loadDesignSystem(TAILWIND_ENGINE_INPUT, {
+        base: '/',
+        loadStylesheet: async (id) => ({ base: '/', content: id === 'tailwindcss/theme' ? themeCss : utilitiesCss })
+    });
+    const emits = (list) => ds.candidatesToCss(list).map(Boolean);
+    const isBare = (c) => !/[-:[\/!.]/.test(c);
+
+    // Every bare name the engine knows: listed bare classes plus the roots of listed ones (rounded from rounded-md)
+    const roots = new Set();
+    for (const [c] of ds.getClassList()) {
+        if (isBare(c)) roots.add(c);
+        const root = c.replace(/^-/, '').split('-')[0];
+        if (root && isBare(root)) roots.add(root);
+    }
+    const rootList = [...roots];
+    const rootEmits = emits(rootList);
+    const bare = rootList.filter((c, i) => rootEmits[i]).sort();
+
+    // Framework classes: selectors in lib/*.css and classes module sources write
+    const names = new Set();
+    const cssDir = path.join('..', 'lib');
+    for (const f of fs.readdirSync(cssDir).filter(f => f.endsWith('.css') && !f.endsWith('.min.css'))) {
+        const css = fs.readFileSync(path.join(cssDir, f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+        for (const m of css.matchAll(/([^{};]+)\{/g)) {
+            if (m[1].trim().startsWith('@')) continue;
+            for (const c of m[1].matchAll(/\.((?:\\.|[\w-])+)/g)) names.add(c[1].replace(/\\(.)/g, '$1'));
+        }
+    }
+    const addList = (text) => { for (const t of text.split(/\s+/)) if (t && !/[${}]/.test(t)) names.add(t); };
+    const sources = glob.sync('scripts/**/*.js', { ignore: ['scripts/tailwind.*.js', 'scripts/**/*.min.js'] });
+    for (const f of sources) {
+        const js = fs.readFileSync(f, 'utf8');
+        for (const m of js.matchAll(/classList\.(?:add|remove|toggle|replace|contains)\(([^)]*)\)/g)) {
+            for (const q of m[1].matchAll(/(['"`])([^'"`]*)\1/g)) addList(q[2]);
+        }
+        for (const m of js.matchAll(/(?:className\s*\+?=\s*|setAttribute\(\s*['"]class['"]\s*,\s*)(['"`])([^'"`]*)\1/g)) addList(m[2]);
+        for (const m of js.matchAll(/\bclass=\\?(["'])([^"'\\]*)\\?\1/g)) addList(m[2]);
+    }
+    const candidates = [...names].filter(c => !isBare(c) && /^[\w-][\w:-]*$/.test(c));
+    const candidateEmits = emits(candidates);
+    const framework = candidates.filter((c, i) => !candidateEmits[i]).sort();
+    return { bare, framework };
+}
+
+async function stampEngineGateLists() {
+    console.log('Stamping engine-skip gate lists...');
+    const { bare, framework } = await engineGateLists();
+    const file = path.join(MONOLITH_DIR, 'manifest.utilities.js');
+    const text = fs.readFileSync(file, 'utf8');
+    const stamped = text
+        .replace('const TAILWIND_BARE_UTILITIES = new Set([]);', `const TAILWIND_BARE_UTILITIES = new Set(${JSON.stringify(bare)});`)
+        .replace('const FRAMEWORK_CLASSES = new Set([]);', `const FRAMEWORK_CLASSES = new Set(${JSON.stringify(framework)});`);
+    if (stamped === text || stamped.includes('new Set([]);')) throw new Error('engine gate list markers not found in manifest.utilities.js');
+    fs.writeFileSync(file, stamped);
+    console.log(`  ✓ ${bare.length} bare utilities, ${framework.length} framework classes\n`);
+}
+
 // Copy files to lib directory for clean jsdelivr URLs
 function copyFilesToDist() {
     console.log('Copying files to lib directory...\n');
@@ -1017,6 +1083,9 @@ async function build() {
 
         // Step 2: Build stylesheets
         if (!SCRIPTS_OUT) await buildStylesheets();
+
+        // Step 3: Engine-skip gate lists (after the stylesheets they read)
+        await stampEngineGateLists();
 
         // Step 4: Copy files to lib directory
         copyFilesToDist();

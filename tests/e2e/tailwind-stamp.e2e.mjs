@@ -8,7 +8,8 @@
  * 5. shadow mode: engine as before, verdict readable from Manifest.tailwindStamp;
  * 6. scan parity: tokens the browser module records on a page equal the node scan of its HTML (Chromium serialisation).
  *
- * The repo's tailwindcss is 4.3.0; the bake is labelled with the browser engine's version so the seed can match.
+ * 7. async loader with a stylesheet still loading: engine at once, Alpine not held back (same timing as unstamped).
+ * The bake runs the repo's tailwindcss, pinned to the bundled browser engine's version (tailwind-stamp-seed.test.js).
  * Run: npm run build && node tests/e2e/tailwind-stamp.e2e.mjs   (BASE_LIB=<master lib dir> for the request A/B; STAMP_LIB to serve another lib)
  */
 import puppeteer from 'puppeteer'
@@ -35,6 +36,7 @@ function check(name, ok, detail = '') {
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`)
 }
 
+const NODE_VERSION = require('tailwindcss/package.json').version
 const injected = (version) => ({
     engine: tailwindcss,
     themeCss: fs.readFileSync(require.resolve('tailwindcss/theme.css'), 'utf8'),
@@ -72,17 +74,17 @@ function addLate() {
 }
 const LATE_CARD = '<div id="late" class="tracking-widest">component</div>'
 
-function headFor({ loader, stamp, sheetHref = '/manifest.utilities.css?v=1', sheet = true, legacyComplete = false, author = '', alpine = true }) {
+function headFor({ loader, stamp, sheetHref = '/manifest.utilities.css?v=1', sheet = true, legacyComplete = false, author = '', alpine = true, async = false }) {
     const link = !sheet ? '' : `<link rel="stylesheet" href="${sheetHref}" data-mnfst-utilities${legacyComplete ? ' data-mnfst-utilities-complete' : ''}${stamp ? ' ' + stamp.linkAttributes : ''}>${stamp ? stamp.tokensHtml : ''}`
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>s</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="stylesheet" href="/fw/manifest.css">${link}${author}
-<script src="/fw/${loader}" data-plugin-base="/fw" data-cdn="/cdn"${alpine ? ' data-alpine="/alpine.js"' : ''} data-tailwind></script>
+<script${async ? ' async' : ''} src="/fw/${loader}" data-plugin-base="/fw" data-cdn="/cdn"${alpine ? ' data-alpine="/alpine.js"' : ''} data-tailwind></script>
 </head>`
 }
 const page = (opts, body) => `${headFor(opts)}<body>${BODY}\n${body || ''}</body></html>`
 
-async function bake(html, { version = ENGINE, mode = 'skip', sources } = {}) {
+async function bake(html, { version = NODE_VERSION, mode = 'skip', sources } = {}) {
     const result = await node.bakeUtilities({ classes: node.scanClasses(html), baseCss: MANIFEST_CSS, tailwind: injected(version) })
     return { css: `@layer base, components, utilities;\n${result.css}`, stamp: node.utilitiesStamp(result, { mode, sources: sources || [html] }) }
 }
@@ -118,6 +120,12 @@ async function buildPages(loader) {
         pages[`/late-${name}-ref`] = page({ loader, sheet: false }, body)
         await stamped(`/shadow-late-${name}`, { loader }, body, { mode: 'shadow' })
     }
+    // Async loader, stylesheet slow to arrive
+    const timing = '<script>document.addEventListener("alpine:init", () => { window.__alpineAt = performance.now() })</script>'
+    await stamped('/async-slow', { loader, async: true, author: timing, sheetHref: '/slow/stamped.css' })
+    pages['/slow/stamped.css'] = pages['/u/async-slow.css']
+    pages['/slow/ref.css'] = pages['/u/async-slow.css']
+    pages['/async-slow-ref'] = page({ loader, async: true, author: timing, sheetHref: '/slow/ref.css' })
     // Parity: tokens recorded on a page vs the node scan of its HTML
     const parityBody = `<div class="[&>*]:p-2 [&amp;_p]:mt-2 content-['>'] data-[x=a&gt;b]:flex" x-transition:enter="opacity-0 scale-90"></div>
 <div :class="{ 'ring-2 ring-blue-500': true, hidden: false }"></div><span class='size-6 !font-bold'></span>`
@@ -137,7 +145,7 @@ const ready = (page) => page.waitForFunction(() => window.__manifestReady === tr
 async function run(loader) {
     console.log(`\n=== ${loader} ===`)
     const { pages } = await buildPages(loader)
-    const srv = await serve({ libDir: LIB, pages })
+    const srv = await serve({ libDir: LIB, pages, delayPaths: { '/slow/stamped.css': 2500, '/slow/ref.css': 2500 } })
     const base = BASE_LIB ? await serve({ libDir: BASE_LIB, pages }) : null
     const browser = await puppeteer.launch({ headless: 'shell', args: ['--no-sandbox', `--host-resolver-rules=MAP ${HOST} 127.0.0.1`] })
 
@@ -275,6 +283,18 @@ async function run(loader) {
             const tags = await engineTags(r.page)
             await r.page.close(); await r.ctx.close()
             check(`/shadow-late-${name}: engine once, trigger reported`, tags === 1 && v.accepted === true && v.wouldSkip === false && v.trigger && (!token || v.trigger.token === token), JSON.stringify(v))
+        }
+
+        // 7. Async loader, sheet still loading
+        {
+            const r = await visit(srv, '/async-slow', { keep: true })
+            const at = await r.page.evaluate(() => window.__alpineAt)
+            await r.page.close(); await r.ctx.close()
+            const ref = await visit(srv, '/async-slow-ref', { keep: true })
+            const refAt = await ref.page.evaluate(() => window.__alpineAt)
+            await ref.page.close(); await ref.ctx.close()
+            check('async + slow sheet: refused for sheet, engine once', r.verdict && r.verdict.reason === 'sheet' && r.tags === 1, JSON.stringify(r.verdict))
+            check('async + slow sheet: Alpine not held back by the sheet', at < 1500 && Math.abs(at - refAt) < 400, `alpine:init ${Math.round(at)} ms vs unstamped ${Math.round(refAt)} ms`)
         }
 
         // 6. Scan parity in Chromium

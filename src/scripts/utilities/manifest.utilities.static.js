@@ -372,9 +372,29 @@ TailwindCompiler.prototype.stripCoveredRulesFromCss = function (cssText) {
 
 // Engine-skip gate (loader: decideTailwindStamp). Armed once the loader accepts the stamp and the sheet is read;
 // after that each token is checked where it is first recorded. utilities.patterns never excuse a token here.
-const FRAMEWORK_STATE_CLASSES = new Set(['dark', 'light', 'active', 'outside', 'copied', 'window-resizing', 'toast-entry', 'toast-exit',
-    'time-options', 'range-start', 'range-end', 'in-range', 'date-picker', 'chart']);
+// Stamped by build.mjs from the bundled engine's design system: its bare utilities (flex, hidden, …), and the
+// classes framework CSS and modules use that the engine emits no rule for
+const TAILWIND_BARE_UTILITIES = new Set([]);
+const FRAMEWORK_CLASSES = new Set([]);
 const AUTHOR_TAILWIND_SELECTOR = 'style[type="text/tailwindcss"]:not(#manifest-tailwind-variants)';
+
+// Whether the engine could read this token as a candidate: bracket/paren groups balanced, no markup or code outside them
+function engineCandidate(cls) {
+    let depth = 0, outside = '';
+    for (const ch of cls) {
+        if (ch === '[' || ch === '(') depth++;
+        else if (ch === ']' || ch === ')') { if (--depth < 0) return false; }
+        else if (!depth) outside += ch;
+    }
+    return depth === 0 && !/[='"`<>{};,\\$]/.test(outside);
+}
+
+// A token that only the engine could style: bare words count only when the engine has a bare utility of that name
+function needsEngine(cls) {
+    if (!engineCandidate(cls)) return false;
+    if (!/[-:[\/!.]/.test(cls)) return TAILWIND_BARE_UTILITIES.has(cls);
+    return !FRAMEWORK_CLASSES.has(cls);
+}
 
 TailwindCompiler.prototype.armEngineGate = function () {
     const stamp = window.__tailwindStamp;
@@ -394,8 +414,8 @@ TailwindCompiler.prototype.armEngineGate = function () {
 TailwindCompiler.prototype.checkEngineToken = function (cls) {
     const gate = this._engineGate;
     if (!gate || gate.trigger) return true;
-    if (gate.tokens.has(cls) || this.staticUtilitiesCoveredClasses.has(cls) || FRAMEWORK_STATE_CLASSES.has(cls)) return true;
-    if (cls.startsWith('x-') || cls.startsWith('$') || this.ignoredClassPatterns.some(p => p.test(cls))) return true;
+    if (gate.tokens.has(cls) || this.staticUtilitiesCoveredClasses.has(cls) || !needsEngine(cls)) return true;
+    if (cls.startsWith('x-') || this.ignoredClassPatterns.some(p => p.test(cls))) return true;
     this.engineNeeded(cls, 'token');
     return false;
 };
