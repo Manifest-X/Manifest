@@ -76,6 +76,7 @@
         "test:e2e:virtual-scroll-to": "node tests/e2e/virtual-scroll-to.e2e.mjs",
         "test:e2e:dropdown-repoint": "node tests/e2e/dropdown-repoint.e2e.mjs",
         "test:e2e:tailwind-dark": "node tests/e2e/tailwind-dark-variant.e2e.mjs",
+        "test:e2e:tailwind-stamp": "node tests/e2e/tailwind-stamp.e2e.mjs",
         "test:e2e:inline-style-variants": "node tests/e2e/utilities-inline-style-variants.e2e.mjs",
         "test:e2e:presence-tabs": "node tests/e2e/presence-tabs.e2e.mjs",
         "test:e2e:sri": "node tests/e2e/loader-sri.e2e.mjs",

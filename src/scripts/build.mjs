@@ -7,6 +7,8 @@ import { createHash } from 'crypto';
 import { glob } from 'glob';
 import cssnano from 'cssnano';
 import postcss from 'postcss';
+import { inlineSubscript } from './build.subscript.mjs';
+import { tailwindSeed } from './manifest.tailwind.variants.mjs';
 
 // Package version (stamped into the data bundle)
 const BUILD_VERSION = JSON.parse(fs.readFileSync(path.join('..', 'package.json'), 'utf8')).version;
@@ -674,10 +676,8 @@ function handleGroupDependentFiles() {
     console.log('');
 }
 
-// Shared ES modules (.mjs) are inlined as bare declarations
 function readSubscript(filePath) {
-    const content = fs.readFileSync(filePath, 'utf8');
-    return filePath.endsWith('.mjs') ? content.replace(/^export (?=const |function |class )/gm, '') : content;
+    return inlineSubscript(filePath, fs.readFileSync(filePath, 'utf8'));
 }
 
 // Combine subscripts into a single file
@@ -964,6 +964,8 @@ function vendorHashes() {
 // Engine version, from the bundled engine's file name: part of the Tailwind output cache fingerprint
 const TAILWIND_ENGINE_VERSION = (CONFIG.dependencies.TAILWIND_V4_FILE.match(/v(\d+\.\d+\.\d+)/) || [])[1];
 if (!TAILWIND_ENGINE_VERSION) throw new Error('Tailwind engine version not found in TAILWIND_V4_FILE');
+// Engine-skip seed the loader accepts: same function the node bake stamps with
+const TAILWIND_SEED = tailwindSeed(TAILWIND_ENGINE_VERSION);
 
 // manifest.modules.integrity.json: what the loader injects; its hash and the version are stamped
 // into the loader. manifest.integrity.json: every browser file, loader included.
@@ -986,8 +988,9 @@ async function emitIntegrity() {
     const stamped = loader
         .replace("const LOADER_VERSION = '0.0.0-dev';", `const LOADER_VERSION = '${BUILD_VERSION}';`)
         .replace("const MODULES_INTEGRITY = '';", `const MODULES_INTEGRITY = '${sri(modulesJson)}';`)
-        .replace("const TAILWIND_ENGINE_VERSION = '';", `const TAILWIND_ENGINE_VERSION = '${TAILWIND_ENGINE_VERSION}';`);
-    if (stamped === loader || !stamped.includes(sri(modulesJson)) || !stamped.includes(`TAILWIND_ENGINE_VERSION = '${TAILWIND_ENGINE_VERSION}'`)) throw new Error('loader integrity stamp markers not found');
+        .replace("const TAILWIND_ENGINE_VERSION = '';", `const TAILWIND_ENGINE_VERSION = '${TAILWIND_ENGINE_VERSION}';`)
+        .replace("const TAILWIND_SEED = '';", `const TAILWIND_SEED = '${TAILWIND_SEED}';`);
+    if (stamped === loader || !stamped.includes(sri(modulesJson)) || !stamped.includes(`TAILWIND_ENGINE_VERSION = '${TAILWIND_ENGINE_VERSION}'`) || !stamped.includes(`TAILWIND_SEED = '${TAILWIND_SEED}'`)) throw new Error('loader integrity stamp markers not found');
     fs.writeFileSync(loaderPath, stamped);
     await minifyScript('manifest.js');
 
