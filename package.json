@@ -21,7 +21,7 @@
         "LICENSE"
     ],
     "dependencies": {
-        "tailwindcss": "^4.2.4"
+        "tailwindcss": "4.3.1"
     },
     "scripts": {
         "clean": "rimraf src/styles/manifest.css src/styles/manifest.min.css src/styles/manifest.theme.css src/styles/manifest.code.css src/styles/manifest.code.min.css lib",
@@ -91,7 +91,7 @@
         "@rollup/plugin-commonjs": "^28.0.1",
         "@rollup/plugin-node-resolve": "^15.3.0",
         "@rollup/plugin-terser": "^0.4.4",
-        "@tailwindcss/cli": "^4.2.4",
+        "@tailwindcss/cli": "4.3.1",
         "ajv": "^8.20.0",
         "alpinejs": "3.17.5",
         "cssnano": "^7.1.1",
