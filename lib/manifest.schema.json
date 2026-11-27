@@ -488,6 +488,7 @@
                                     "magic",
                                     "otp",
                                     "phone",
+                                    "passkey",
                                     "oauth",
                                     "password"
                                 ]
