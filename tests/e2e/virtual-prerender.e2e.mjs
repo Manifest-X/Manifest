@@ -45,13 +45,17 @@ const INDEX = `<!doctype html><html><head><meta charset="utf-8"><title>virtual</
   <template x-for="tile in people" :key="tile.id"><div class="r" style="width:110px;height:60px" x-text="'#' + tile.id + ' ' + tile.name"></div></template>
 </div>
 <div id="masonry" x-virtual="{ mode: 'masonry', columns: 3, gap: 4, height: b => b.h }" style="${BOX};position:relative">
+  <div class="author" style="position:absolute;top:0;right:0" x-text="'badge ' + people.length"></div>
   <template x-for="block in people" :key="block.id"><div class="r" :style="'height:' + block.h + 'px'" x-text="'#' + block.id + ' ' + block.name"></div></template>
+</div>
+<div id="inner" x-virtual style="${BOX}">
+  <template x-for="o in people" :key="o.id"><div class="r" style="height:30px"><span x-text="'#' + o.id + ' ' + o.name"></span> <template x-for="k in [o.id, o.id + 1]" :key="k" data-prerender="dynamic"><i x-text="'c' + k + ' '"></i></template></div></template>
 </div>
 <div id="source" x-virtual style="${BOX}">
   <template x-for="row in $x.people" :key="row.id"><div class="r" style="height:30px" x-text="'#' + row.id + ' ' + row.name"></div></template>
 </div>
 </main></body></html>`
-const LISTS = ['local', 'recycle', 'table', 'gallery', 'masonry', 'source']
+const LISTS = ['local', 'recycle', 'table', 'gallery', 'masonry', 'inner', 'source']
 
 // A site rendered with the given virtual module (null: this tree's lib)
 function bake(virtualFrom) {
@@ -94,14 +98,14 @@ async function open(browser, out) {
     const base = `http://localhost:${server.address().port}`
     const tab = await browser.newPage()
     await tab.setViewport({ width: 1200, height: 900 })
-    const errors = []
+    const errors = [], warns = []
     tab.on('pageerror', e => errors.push(e.message))
-    tab.on('console', m => m.type() === 'error' && errors.push(m.text()))
+    tab.on('console', m => m.type() === 'error' ? errors.push(m.text()) : m.type() === 'warn' && warns.push(m.text()))
     await tab.setRequestInterception(true)
     tab.on('request', q => q.url().startsWith(base) ? q.continue() : q.abort())
     await tab.goto(`${base}/`, { waitUntil: 'load' })
     await wait(2500)
-    return { tab, errors, server }
+    return { tab, errors, warns, server }
 }
 
 // Rows in a list: count, blank ones, the first's text, spacers
@@ -124,7 +128,7 @@ try {
     const html = fs.readFileSync(path.join(fresh.out, 'index.html'), 'utf8')
     check('baked HTML keeps row text for crawlers', html.includes('#3 P3'))
 
-    const { tab, errors, server } = await open(browser, fresh.out)
+    const { tab, errors, warns, server } = await open(browser, fresh.out)
     for (const id of LISTS) {
         const s = await rowsOf(tab, id)
         const spacers = id === 'masonry' ? 1 : 2
@@ -148,6 +152,11 @@ try {
         return { scrollTop: el.scrollTop, offset: row ? Math.round(row.getBoundingClientRect().top - top) : null }
     })
     check('scrollToIndex(250) lands on a prerendered list', landed.scrollTop > 0 && landed.offset !== null && Math.abs(landed.offset) <= 1, landed)
+    const inner = await tab.evaluate(() => document.querySelector('#inner .r')?.textContent.replace(/\s+/g, ' ').trim())
+    check('inner x-for in rows renders', /^#(\d+) P\1 c\1 c\d+$/.test(inner || ''), inner)
+    const badge = await tab.evaluate(() => document.querySelector('#masonry .author')?.textContent)
+    check('masonry: author element beside the rows survives hydration', badge === 'badge 500', badge)
+    check('no x-virtual warnings', !warns.some(w => w.includes('[x-virtual]')), warns.filter(w => w.includes('[x-virtual]')))
     const refs = errors.filter(e => /ReferenceError|is not defined/.test(e))
     check('no ReferenceError at hydration', refs.length === 0, refs.slice(0, 5))
     check('no page errors', errors.length === 0, errors.slice(0, 5))
@@ -158,10 +167,13 @@ try {
     const old = await open(browser, legacy.out)
     const oldRefs = old.errors.filter(e => /ReferenceError|is not defined/.test(e))
     check('legacy bake: no ReferenceError with the new module', oldRefs.length === 0, { count: oldRefs.length, first: oldRefs[0] })
-    for (const id of ['local', 'table']) {
+    for (const id of ['local', 'table', 'masonry', 'inner']) {
         const s = await rowsOf(old.tab, id)
-        check(`legacy bake: ${id} keeps its baked text`, s.rows > 3 && s.blank === 0, s)
+        check(`legacy bake: ${id} keeps its baked text`, s.rows > 3 && s.blank === 0 && /^#0 P0/.test(s.first), s)
     }
+    const oldBadge = await old.tab.evaluate(() => document.querySelector('#masonry .author')?.textContent)
+    check('legacy bake: masonry author element kept live', oldBadge === 'badge 500' && await old.tab.evaluate(() => !document.querySelector('#masonry .author').hasAttribute('x-ignore')), oldBadge)
+    check('legacy bake: no x-virtual template warning', !old.warns.some(w => w.includes('expects a descendant')), old.warns.filter(w => w.includes('[x-virtual]')))
     await old.tab.close(); old.server.close()
 } finally {
     await browser.close()

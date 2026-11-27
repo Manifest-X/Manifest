@@ -65,13 +65,17 @@ function hasVirtual(el) {
 
 // The virtualized template: one marked data-virtual, else the first outside <thead>/<tfoot>, else the first
 function pickTemplate(el, warn) {
-    const all = el.querySelectorAll('template[x-for], template[data-virtual-for]');
+    const all = [...el.querySelectorAll('template[x-for], template[data-virtual-for]')].filter((t) => !ignoredIn(t, el));
     if (all.length < 2) return all[0] || null;
     for (const t of all) if (t.hasAttribute('data-virtual')) return t;
-    const body = [...all].filter((t) => !inTableHead(t, el));
+    const body = all.filter((t) => !inTableHead(t, el));
     // Only document order decided: say how to make it explicit
     if (warn && body.length !== 1) console.warn('[x-virtual] several x-for templates inside and none marked: virtualizing the first. Mark the rows template with data-virtual', el);
     return body[0] || all[0];
+}
+function ignoredIn(t, el) {
+    for (let n = t.parentElement; n && n !== el; n = n.parentElement) if (n.hasAttribute('x-ignore')) return true;
+    return false;
 }
 function inTableHead(t, el) {
     for (let n = t.parentElement; n && n !== el; n = n.parentElement) if (n.tagName === 'THEAD' || n.tagName === 'TFOOT') return true;
@@ -102,31 +106,34 @@ function ownSpacers(el) {
     return out;
 }
 
-// Prerendered rows have no loop scope: stamped rows, rows between line spacers, placed masonry items
-function bakedRows(host, spacers) {
-    const out = new Set(host.querySelectorAll(':scope > [data-virtual-row]'));
-    if (spacers.length === 1) {
-        for (const n of host.children) if (n.tagName !== 'TEMPLATE' && n !== spacers[0] && n.style.position === 'absolute') out.add(n);
-    } else {
-        const end = spacers[spacers.length - 1];
-        for (let n = spacers[0].nextSibling; n && n !== end; n = n.nextSibling) if (n.tagName !== 'TEMPLATE' || !n.hasAttribute('data-virtual-for')) out.add(n);
-    }
-    return out;
-}
-
 // Prerendered list: drop its rows and spacers before Alpine walks them; the list renders afresh.
-// A bake without the loop on its template cannot run: its rows stay as baked, inert
-function adoptBaked(el, template) {
+// A bake whose template lost its loop (older module) cannot run: its rows stay as baked, inert
+function adoptBaked(el) {
     if (live.has(el)) return;
     const spacers = ownSpacers(el);
     if (!spacers.length) return;
     const host = spacers[0].parentElement;
-    if (template && template.hasAttribute('data-virtual-for')) {
-        for (const n of bakedRows(host, spacers)) n.remove();
-        for (const s of spacers) s.remove();
-    } else {
-        for (const n of bakedRows(host, spacers)) if (n.nodeType === 1 && !n._x_marker) n.setAttribute('x-ignore', '');
+    const rows = new Set(host.querySelectorAll(':scope > [data-virtual-row]'));
+    if (spacers.length > 1) {
+        const end = spacers[spacers.length - 1];
+        for (let n = spacers[0].nextSibling; n && n !== end; n = n.nextSibling) rows.add(n);
     }
+    const template = [...host.children].find((n) => n.tagName === 'TEMPLATE' && !rows.has(n));
+    if (template && (template.hasAttribute('data-virtual-for') || template.hasAttribute('x-for'))) {
+        for (const n of rows) n.remove();
+        for (const s of spacers) s.remove();
+        return;
+    }
+    if (spacers.length === 1 && template) for (const n of host.children) if (n !== spacers[0] && clonedFrom(n, template)) rows.add(n);
+    for (const n of rows) if (n.nodeType === 1) n.setAttribute('x-ignore', '');
+}
+
+// Masonry item baked from the template: placed, same tag, every attribute but class/style as authored
+function clonedFrom(n, template) {
+    const root = template.content.firstElementChild;
+    if (!root || n.tagName !== root.tagName || n.style.position !== 'absolute') return false;
+    for (const a of root.attributes) if (a.name !== 'class' && a.name !== 'style' && n.getAttribute(a.name) !== a.value) return false;
+    return true;
 }
 
 const live = new WeakSet();   // x-virtual elements with a running list
@@ -138,9 +145,9 @@ function initializeVirtualPlugin() {
     if (typeof Alpine.interceptInit === 'function') {
         Alpine.interceptInit((el) => {
             if (el.nodeType !== 1 || !hasVirtual(el) || el.hasAttribute('x-ignore')) return;
+            adoptBaked(el);
             const template = pickTemplate(el);
             if (template) stashFor(template);
-            adoptBaked(el, template);
         });
     }
 
@@ -191,9 +198,9 @@ function initializeVirtualPlugin() {
 
         if (live.has(el)) return;
         // --- Find the template (may be nested, e.g. table > tbody > template) ---
-        const template = pickTemplate(el, true) || el.querySelector(':scope template');
+        adoptBaked(el);
+        const template = pickTemplate(el, true) || [...el.querySelectorAll('template')].find((t) => !ignoredIn(t, el));
         if (template) stashFor(template);
-        adoptBaked(el, template);
         const forExpr = template && (template.getAttribute('data-virtual-for') ?? template.getAttribute('x-for'));
         if (!forExpr) {
             // Quiet on re-init of an already-virtualized container
