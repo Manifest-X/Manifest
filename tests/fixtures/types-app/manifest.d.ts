@@ -282,7 +282,7 @@ export interface ManifestPasskey {
 }
 
 export type ManifestPasskeyCode =
-    | 'cancelled' | 'unsupported' | 'not-enabled' | 'not-signed-in' | 'signed-in' | 'guest'
+    | 'cancelled' | 'busy' | 'unsupported' | 'not-enabled' | 'not-signed-in' | 'signed-in' | 'guest'
     | 'reauth-required' | 'limit' | 'exists' | 'invalid' | 'rate-limited' | 'failed';
 
 /** Result of every `$auth` passkey method. `error` is `null` when the prompt was dismissed. */
