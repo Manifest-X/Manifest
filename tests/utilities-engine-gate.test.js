@@ -182,7 +182,7 @@ describe('which tokens could need the engine', () => {
     })
 
     it('tokens that cannot be candidates never ask', async () => {
-        const junk = ['for=', 'name=', '"quoted', "it's", 'a{b}', 'x;y', 'f(x', 'a]b', '`tpl`', 'a,b', '<b>', '${x}']
+        const junk = ['for=', 'name=', '"quoted', "it's", 'a{b}', 'x;y', 'f(x', 'a]b', '`tpl`', 'a,b', '<b>', '${x}', 'gradient-layer-icon-', 'bg-']
         expect(await asked(junk)).toEqual(junk.map(() => false))
     })
 
@@ -192,12 +192,12 @@ describe('which tokens could need the engine', () => {
     })
 
     it('framework classes the engine emits nothing for never ask', async () => {
-        const fw = ['tabs-wrapper', 'color-icon-solid', 'gradient-layer-icon-linear', 'toast-entry', 'window-resizing', 'range-start', 'no-scrollbar', 'p-safe']
+        const fw = ['tabs-wrapper', 'color-icon-solid', 'gradient-layer-icon-linear', 'toast-entry', 'window-resizing', 'range-start', 'no-scrollbar', 'p-safe', 'iconify--lucide', 'iconify--simple-icons', 'author-hook-thing']
         expect(await asked(fw)).toEqual(fw.map(() => false))
     })
 
     it('runtime Tailwind classes the bake missed ask', async () => {
-        const real = ['!text-white', 'dark:!bg-pink-900', '!gap-0', 'h-112', 'bg-stone-600', 'font-sans', '[&_strong]:-ml-1', '-mt-2', 'md:hidden', 'hover:underline']
+        const real = ['!text-white', 'dark:!bg-pink-900', '!gap-0', 'h-112', 'bg-stone-600', 'font-sans', '[&_strong]:-ml-1', '-mt-2', 'md:hidden', 'hover:underline', 'gap-6!', 'bg-red-500/50', 'w-1/2', 'sr-only', 'pointer-events-none', '-inset-x-full', '@md:flex', '[mask-type:luminance]', 'text-content-stark']
         expect(await asked(real)).toEqual(real.map(() => true))
     })
 })

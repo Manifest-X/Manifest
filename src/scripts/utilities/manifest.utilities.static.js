@@ -372,13 +372,14 @@ TailwindCompiler.prototype.stripCoveredRulesFromCss = function (cssText) {
 
 // Engine-skip gate (loader: decideTailwindStamp). Armed once the loader accepts the stamp and the sheet is read;
 // after that each token is checked where it is first recorded. utilities.patterns never excuse a token here.
-// Stamped by build.mjs from the bundled engine's design system: its bare utilities (flex, hidden, …), and the
-// classes framework CSS and modules use that the engine emits no rule for
+// Stamped by build.mjs from the bundled engine's design system: its bare utilities (flex, hidden, …), the first
+// segment of every utility it has (bg, inset, pointer, …), and the framework classes under those that it emits no rule for
 const TAILWIND_BARE_UTILITIES = new Set([]);
+const TAILWIND_UTILITY_ROOTS = new Set([]);
 const FRAMEWORK_CLASSES = new Set([]);
 const AUTHOR_TAILWIND_SELECTOR = 'style[type="text/tailwindcss"]:not(#manifest-tailwind-variants)';
 
-// Whether the engine could read this token as a candidate: bracket/paren groups balanced, no markup or code outside them
+// Whether the engine could read this token as a candidate: groups balanced, no markup or code outside them, no dangling dash
 function engineCandidate(cls) {
     let depth = 0, outside = '';
     for (const ch of cls) {
@@ -386,13 +387,28 @@ function engineCandidate(cls) {
         else if (ch === ']' || ch === ')') { if (--depth < 0) return false; }
         else if (!depth) outside += ch;
     }
-    return depth === 0 && !/[='"`<>{};,\\$]/.test(outside);
+    return depth === 0 && !/[='"`<>{};,\\$]/.test(outside) && !cls.endsWith('-');
 }
 
-// A token that only the engine could style: bare words count only when the engine has a bare utility of that name
+// The utility after the last variant, without important or negative marks
+function utilityPart(cls) {
+    let depth = 0, start = 0;
+    for (let i = 0; i < cls.length; i++) {
+        const ch = cls[i];
+        if (ch === '[' || ch === '(') depth++;
+        else if (ch === ']' || ch === ')') depth--;
+        else if (ch === ':' && !depth) start = i + 1;
+    }
+    return cls.slice(start).replace(/^!/, '').replace(/!$/, '').replace(/^-/, '');
+}
+
+// A token only the engine could style: an arbitrary value or property, a bare utility it has, or a name under one of its utilities
 function needsEngine(cls) {
     if (!engineCandidate(cls)) return false;
-    if (!/[-:[\/!.]/.test(cls)) return TAILWIND_BARE_UTILITIES.has(cls);
+    if (!/[-:[\/!.(]/.test(cls)) return TAILWIND_BARE_UTILITIES.has(cls);
+    const base = utilityPart(cls);
+    if (/^[[(]/.test(base)) return true;
+    if (!TAILWIND_UTILITY_ROOTS.has(base.split(/[-/[(]/)[0])) return false;
     return !FRAMEWORK_CLASSES.has(cls);
 }
 

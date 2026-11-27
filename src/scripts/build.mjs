@@ -804,6 +804,11 @@ async function engineGateLists() {
     const rootEmits = emits(rootList);
     const bare = rootList.filter((c, i) => rootEmits[i]).sort();
 
+    // First segment of every utility: a name whose first segment is none of these cannot get a rule
+    const utilityRoots = new Set();
+    for (const kind of ['static', 'functional']) for (const k of ds.utilities.keys(kind)) utilityRoots.add(k.replace(/^-/, '').split('-')[0]);
+    const firstSegment = (c) => c.slice(c.lastIndexOf(':') + 1).replace(/^!/, '').replace(/^-/, '').split(/[-/[(]/)[0];
+
     // Framework classes: selectors in lib/*.css and classes module sources write
     const names = new Set();
     const cssDir = path.join('..', 'lib');
@@ -824,23 +829,24 @@ async function engineGateLists() {
         for (const m of js.matchAll(/(?:className\s*\+?=\s*|setAttribute\(\s*['"]class['"]\s*,\s*)(['"`])([^'"`]*)\1/g)) addList(m[2]);
         for (const m of js.matchAll(/\bclass=\\?(["'])([^"'\\]*)\\?\1/g)) addList(m[2]);
     }
-    const candidates = [...names].filter(c => !isBare(c) && /^[\w-][\w:-]*$/.test(c));
+    const candidates = [...names].filter(c => !isBare(c) && /^[\w-][\w:-]*$/.test(c) && utilityRoots.has(firstSegment(c)));
     const candidateEmits = emits(candidates);
     const framework = candidates.filter((c, i) => !candidateEmits[i]).sort();
-    return { bare, framework };
+    return { bare, roots: [...utilityRoots].sort(), framework };
 }
 
 async function stampEngineGateLists() {
     console.log('Stamping engine-skip gate lists...');
-    const { bare, framework } = await engineGateLists();
+    const { bare, roots, framework } = await engineGateLists();
     const file = path.join(MONOLITH_DIR, 'manifest.utilities.js');
     const text = fs.readFileSync(file, 'utf8');
     const stamped = text
         .replace('const TAILWIND_BARE_UTILITIES = new Set([]);', `const TAILWIND_BARE_UTILITIES = new Set(${JSON.stringify(bare)});`)
+        .replace('const TAILWIND_UTILITY_ROOTS = new Set([]);', `const TAILWIND_UTILITY_ROOTS = new Set(${JSON.stringify(roots)});`)
         .replace('const FRAMEWORK_CLASSES = new Set([]);', `const FRAMEWORK_CLASSES = new Set(${JSON.stringify(framework)});`);
     if (stamped === text || stamped.includes('new Set([]);')) throw new Error('engine gate list markers not found in manifest.utilities.js');
     fs.writeFileSync(file, stamped);
-    console.log(`  ✓ ${bare.length} bare utilities, ${framework.length} framework classes\n`);
+    console.log(`  ✓ ${bare.length} bare utilities, ${roots.length} utility roots, ${framework.length} framework classes\n`);
 }
 
 // Copy files to lib directory for clean jsdelivr URLs

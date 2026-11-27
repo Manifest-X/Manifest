@@ -27,12 +27,16 @@ const emits = (tokens) => ds.candidatesToCss(tokens).map(Boolean)
 describe('engine-skip gate lists', () => {
     const bare = list('TAILWIND_BARE_UTILITIES')
     const framework = list('FRAMEWORK_CLASSES')
+    const roots = list('TAILWIND_UTILITY_ROOTS')
+    const firstSegment = (c) => c.slice(c.lastIndexOf(':') + 1).replace(/^!/, '').replace(/^-/, '').split(/[-/[(]/)[0]
 
     it('are stamped', () => {
         expect(bare.length).toBeGreaterThan(30)
-        expect(framework.length).toBeGreaterThan(50)
+        expect(framework.length).toBeGreaterThan(20)
+        expect(roots.length).toBeGreaterThan(100)
         for (const t of ['flex', 'hidden', 'block', 'grid', 'container', 'truncate', 'shadow', 'rounded', 'grow']) expect(bare).toContain(t)
-        for (const t of ['tabs-wrapper', 'color-icon-solid', 'toast-entry']) expect(framework).toContain(t)
+        for (const t of ['bg', 'text', 'p', 'inset', 'pointer', 'sr', 'no']) expect(roots).toContain(t)
+        for (const t of ['p-safe', 'no-scrollbar', 'touch-only']) expect(framework).toContain(t)
     })
 
     it('every listed bare utility emits a rule', () => {
@@ -49,6 +53,20 @@ describe('engine-skip gate lists', () => {
         const words = ['iconify', 'prompt', 'card', 'row', 'col', 'toast', 'dark', 'group', 'peer', 'false']
         const wordHits = emits(words)
         expect(words.filter((t, i) => wordHits[i])).toEqual([])
+    })
+
+    it('every utility the engine lists starts with a stamped root (so none is excused by the root rule)', () => {
+        const missing = ds.getClassList().map(([c]) => c).filter((c) => !roots.includes(firstSegment(c)))
+        expect(missing).toEqual([])
+        const statics = [...ds.utilities.keys('static'), ...ds.utilities.keys('functional')].filter((c) => !roots.includes(firstSegment(c)))
+        expect(statics).toEqual([])
+    })
+
+    it('framework hooks outside every root emit nothing (iconify--*, colorpicker parts, toasts)', () => {
+        const hooks = ['iconify--lucide', 'iconify--meteor-icons', 'tabs-wrapper', 'color-icon-solid', 'toast-entry', 'gradient-layer-icon-linear', 'canvas-wrapper']
+        expect(hooks.filter((c) => roots.includes(firstSegment(c)))).toEqual([])
+        const hits = emits(hooks)
+        expect(hooks.filter((t, i) => hits[i])).toEqual([])
     })
 
     it('no excused framework class emits a rule', () => {
