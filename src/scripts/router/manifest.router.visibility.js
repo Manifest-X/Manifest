@@ -83,23 +83,10 @@ function routeMatches(element, normalizedPath, defined) {
     const routeCondition = element.getAttribute('x-route');
     if (!routeCondition) return null;
 
-    const conditions = routeCondition.split(',').map(cond => cond.trim());
-    if (conditions.includes('!*')) {
-        if (defined === undefined) defined = isRouteDefined(normalizedPath, collectDefinedRoutes());
-        return !defined;
-    }
-
-    const positiveConditions = conditions.filter(cond => !cond.startsWith('!'));
-    const negativeConditions = conditions
-        .filter(cond => cond.startsWith('!'))
-        .map(cond => cond.slice(1));
-    const hasNegativeMatch = negativeConditions.some(cond =>
-        window.ManifestRouting.matchesCondition(normalizedPath, cond)
-    );
-    const hasPositiveMatch = positiveConditions.length === 0 || positiveConditions.some(cond =>
-        window.ManifestRouting.matchesCondition(normalizedPath, cond)
-    );
-    return hasPositiveMatch && !hasNegativeMatch;
+    const match = window.ManifestRouting.conditionsMatch(routeCondition, normalizedPath);
+    if (match !== null) return match;
+    if (defined === undefined) defined = isRouteDefined(normalizedPath, collectDefinedRoutes());
+    return !defined;
 }
 
 // Cooperative check (defer plugin): is this route active for the current URL? Static MPA output always is.
@@ -119,6 +106,9 @@ function showRoute(element) {
     element.dispatchEvent(new CustomEvent('manifest:route-activate'));
     const wasHidden = element.hasAttribute('hidden');
     if (wasHidden) element.removeAttribute('hidden');
+    // A cloak added only because the route was hidden goes with it
+    if (element.__manifestRouteCloak && !hasXShow(element)) element.removeAttribute('x-cloak');
+    element.__manifestRouteCloak = false;
     const prior = element.__manifestRouteDisplay;
     if (prior) {
         element.__manifestRouteDisplay = null;
@@ -171,22 +161,22 @@ function processRouteVisibility(normalizedPath) {
     }
 }
 
-// Add x-cloak to route elements that don't have it
-function addXCloakToRouteElements() {
+// Cloak what the route pass hid and x-show elements (Alpine decides their display); matching routes keep painting
+function cloakRouteElements() {
     if (isPrerenderedStaticMPA()) return;
-    const routeElements = document.querySelectorAll('[x-route]:not([x-cloak])');
-    routeElements.forEach(element => {
-        element.setAttribute('x-cloak', '');
+    document.querySelectorAll('[x-route]:not([x-cloak])').forEach(element => {
+        if (element.hasAttribute('hidden') || hasXShow(element)) {
+            element.setAttribute('x-cloak', '');
+            element.__manifestRouteCloak = true;
+        }
     });
 }
 
 // Initialize visibility management
 function initializeVisibility() {
-    // Add x-cloak to route elements to prevent flash
-    addXCloakToRouteElements();
-
     // Process initial visibility (use logical path when app is in a subpath)
     processRouteVisibility(currentNormalizedPath());
+    cloakRouteElements();
 
     // Listen for route changes
     window.addEventListener('manifest:route-change', (event) => {
@@ -197,22 +187,14 @@ function initializeVisibility() {
     // Listen for component processing to ensure visibility is applied after components load
     window.addEventListener('manifest:components-processed', () => {
         if (isPrerenderedStaticMPA()) return;
-        // Add x-cloak to any new route elements
-        addXCloakToRouteElements();
         processRouteVisibility(currentNormalizedPath());
+        cloakRouteElements();
     });
 }
 
-// Add x-cloak immediately to prevent flash
 if (document.readyState === 'loading') {
-    // DOM is still loading, add x-cloak as soon as possible
-    document.addEventListener('DOMContentLoaded', () => {
-        addXCloakToRouteElements();
-        initializeVisibility();
-    });
+    document.addEventListener('DOMContentLoaded', initializeVisibility);
 } else {
-    // DOM is ready, add x-cloak immediately
-    addXCloakToRouteElements();
     initializeVisibility();
 }
 

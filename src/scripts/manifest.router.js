@@ -13,73 +13,112 @@ function initializeRouting() {
 
 }
 
+// mnfst:route.match:start — synced by the build from scripts/snippets/manifest.route.match.js; edit there
+// x-route matching, shared by the router and the loader's parse-time pass
+
+// Logical route path for a pathname under an app base path ('' at the root)
+function routeLogicalPath(pathname, base) {
+    if (!base) {
+        const p = (pathname || '/').replace(/\/$/, '') || '/';
+        if (p === '/' || p === '/index.html' || p === '/index') return '/';
+        return p.startsWith('/') ? p : '/' + p;
+    }
+    if (pathname === base || pathname === base + '/') return '/';
+    if (pathname.startsWith(base + '/')) {
+        let logical = pathname.slice(base.length) || '/';
+        if (logical === '/index.html' || logical === '/index') logical = '/';
+        return logical;
+    }
+    if (pathname === base + '/index.html' || pathname === base + '/index') return '/';
+    return pathname;
+}
+
+// One condition against a path; a leading locale code in the path is ignored
+function routePathMatches(path, condition, localizationCodes) {
+    const normalizedPath = path === '/' ? '/' : path.replace(/^\/+|\/+$/g, '') || '/';
+
+    let pathToCheck = normalizedPath;
+    if (localizationCodes.length > 0) {
+        const pathSegments = normalizedPath.split('/').filter(segment => segment);
+        if (pathSegments.length > 0 && localizationCodes.includes(pathSegments[0])) {
+            pathToCheck = pathSegments.slice(1).join('/') || '/';
+        }
+    }
+
+    // Wildcards
+    if (condition.includes('*')) {
+        if (condition === '*') return true;
+        const wildcardPattern = condition.replace('*', '');
+        const normalizedPattern = wildcardPattern.replace(/^\/+|\/+$/g, '');
+        return pathToCheck.startsWith(normalizedPattern + '/');
+    }
+
+    // Exact (=)
+    if (condition.startsWith('=')) {
+        const exactPath = condition.slice(1);
+        if (exactPath === '/') {
+            return pathToCheck === '/' || pathToCheck === '';
+        }
+        const normalizedExactPath = exactPath.replace(/^\/+|\/+$/g, '');
+        return pathToCheck === normalizedExactPath;
+    }
+
+    // Path and subpaths (/)
+    if (condition.startsWith('/')) {
+        if (condition === '/') {
+            return pathToCheck === '/' || pathToCheck === '';
+        }
+        const routePath = condition.replace(/^\//, '');
+        return pathToCheck === routePath || pathToCheck.startsWith(routePath + '/');
+    }
+
+    // Substring
+    return pathToCheck.includes(condition);
+}
+
+// A comma list of conditions ('!' negates); null when the list has '!*', which needs every defined route
+function routeConditionsMatch(routeCondition, normalizedPath, matches) {
+    const conditions = routeCondition.split(',').map(cond => cond.trim());
+    if (conditions.includes('!*')) return null;
+    const positiveConditions = conditions.filter(cond => !cond.startsWith('!'));
+    const negativeConditions = conditions
+        .filter(cond => cond.startsWith('!'))
+        .map(cond => cond.slice(1));
+    const hasNegativeMatch = negativeConditions.some(cond => matches(normalizedPath, cond));
+    const hasPositiveMatch = positiveConditions.length === 0 || positiveConditions.some(cond => matches(normalizedPath, cond));
+    return hasPositiveMatch && !hasNegativeMatch;
+}
+// mnfst:route.match:end
+
+// Locale codes: manifest data keys shaped like one
+function localizationCodesFromManifest() {
+    const localizationCodes = [];
+    try {
+        const manifest = window.ManifestComponentsRegistry?.manifest || window.manifest;
+        if (manifest && manifest.data) {
+            Object.values(manifest.data).forEach(dataSource => {
+                if (typeof dataSource === 'object' && dataSource !== null) {
+                    Object.keys(dataSource).forEach(key => {
+                        if (key.match(/^[a-z]{2}(-[A-Z]{2})?$/)) {
+                            localizationCodes.push(key);
+                        }
+                    });
+                }
+            });
+        }
+    } catch (e) {
+        // Manifest not available
+    }
+    return localizationCodes;
+}
+
 // Export main routing interface
 window.ManifestRouting = {
     initialize: initializeRouting,
     // Route matching utility
-    matchesCondition: (path, condition) => {
-        // Normalize path consistently - keep '/' as '/' for home route
-        const normalizedPath = path === '/' ? '/' : path.replace(/^\/+|\/+$/g, '') || '/';
-
-        // Get localization codes from manifest
-        const localizationCodes = [];
-        try {
-            const manifest = window.ManifestComponentsRegistry?.manifest || window.manifest;
-            if (manifest && manifest.data) {
-                Object.values(manifest.data).forEach(dataSource => {
-                    if (typeof dataSource === 'object' && dataSource !== null) {
-                        Object.keys(dataSource).forEach(key => {
-                            if (key.match(/^[a-z]{2}(-[A-Z]{2})?$/)) {
-                                localizationCodes.push(key);
-                            }
-                        });
-                    }
-                });
-            }
-        } catch (e) {
-            // Ignore errors if manifest is not available
-        }
-
-        // Check if path starts with a localization code
-        let pathToCheck = normalizedPath;
-        if (localizationCodes.length > 0) {
-            const pathSegments = normalizedPath.split('/').filter(segment => segment);
-            if (pathSegments.length > 0 && localizationCodes.includes(pathSegments[0])) {
-                // Remove the localization code and check the remaining path
-                pathToCheck = pathSegments.slice(1).join('/') || '/';
-            }
-        }
-
-        // Handle wildcards
-        if (condition.includes('*')) {
-            if (condition === '*') return true;
-            const wildcardPattern = condition.replace('*', '');
-            const normalizedPattern = wildcardPattern.replace(/^\/+|\/+$/g, '');
-            return pathToCheck.startsWith(normalizedPattern + '/');
-        }
-
-        // Handle exact matches (starting with =) - after localization processing
-        if (condition.startsWith('=')) {
-            const exactPath = condition.slice(1);
-            if (exactPath === '/') {
-                return pathToCheck === '/' || pathToCheck === '';
-            }
-            const normalizedExactPath = exactPath.replace(/^\/+|\/+$/g, '');
-            return pathToCheck === normalizedExactPath;
-        }
-
-        // Handle exact paths (starting with /)
-        if (condition.startsWith('/')) {
-            if (condition === '/') {
-                return pathToCheck === '/' || pathToCheck === '';
-            }
-            const routePath = condition.replace(/^\//, '');
-            return pathToCheck === routePath || pathToCheck.startsWith(routePath + '/');
-        }
-
-        // Handle substring matching (default behavior)
-        return pathToCheck.includes(condition);
-    }
+    matchesCondition: (path, condition) => routePathMatches(path, condition, localizationCodesFromManifest()),
+    // A whole x-route value; null for lists with '!*'
+    conditionsMatch: (routeCondition, path) => routeConditionsMatch(routeCondition, path, window.ManifestRouting.matchesCondition)
 };
 
 // Start when DOM is ready; after the export so routing-ready listeners can read ManifestRouting
@@ -304,7 +343,14 @@ function applyStickyLocaleToPathname(absolutePathname) {
 }
 
 function pathnameToLogical(pathname) {
-    const base = getBasePath();
+    return routeLogicalPath(pathname, getBasePath());
+}
+
+// mnfst:route.match:start — synced by the build from scripts/snippets/manifest.route.match.js; edit there
+// x-route matching, shared by the router and the loader's parse-time pass
+
+// Logical route path for a pathname under an app base path ('' at the root)
+function routeLogicalPath(pathname, base) {
     if (!base) {
         const p = (pathname || '/').replace(/\/$/, '') || '/';
         if (p === '/' || p === '/index.html' || p === '/index') return '/';
@@ -319,6 +365,63 @@ function pathnameToLogical(pathname) {
     if (pathname === base + '/index.html' || pathname === base + '/index') return '/';
     return pathname;
 }
+
+// One condition against a path; a leading locale code in the path is ignored
+function routePathMatches(path, condition, localizationCodes) {
+    const normalizedPath = path === '/' ? '/' : path.replace(/^\/+|\/+$/g, '') || '/';
+
+    let pathToCheck = normalizedPath;
+    if (localizationCodes.length > 0) {
+        const pathSegments = normalizedPath.split('/').filter(segment => segment);
+        if (pathSegments.length > 0 && localizationCodes.includes(pathSegments[0])) {
+            pathToCheck = pathSegments.slice(1).join('/') || '/';
+        }
+    }
+
+    // Wildcards
+    if (condition.includes('*')) {
+        if (condition === '*') return true;
+        const wildcardPattern = condition.replace('*', '');
+        const normalizedPattern = wildcardPattern.replace(/^\/+|\/+$/g, '');
+        return pathToCheck.startsWith(normalizedPattern + '/');
+    }
+
+    // Exact (=)
+    if (condition.startsWith('=')) {
+        const exactPath = condition.slice(1);
+        if (exactPath === '/') {
+            return pathToCheck === '/' || pathToCheck === '';
+        }
+        const normalizedExactPath = exactPath.replace(/^\/+|\/+$/g, '');
+        return pathToCheck === normalizedExactPath;
+    }
+
+    // Path and subpaths (/)
+    if (condition.startsWith('/')) {
+        if (condition === '/') {
+            return pathToCheck === '/' || pathToCheck === '';
+        }
+        const routePath = condition.replace(/^\//, '');
+        return pathToCheck === routePath || pathToCheck.startsWith(routePath + '/');
+    }
+
+    // Substring
+    return pathToCheck.includes(condition);
+}
+
+// A comma list of conditions ('!' negates); null when the list has '!*', which needs every defined route
+function routeConditionsMatch(routeCondition, normalizedPath, matches) {
+    const conditions = routeCondition.split(',').map(cond => cond.trim());
+    if (conditions.includes('!*')) return null;
+    const positiveConditions = conditions.filter(cond => !cond.startsWith('!'));
+    const negativeConditions = conditions
+        .filter(cond => cond.startsWith('!'))
+        .map(cond => cond.slice(1));
+    const hasNegativeMatch = negativeConditions.some(cond => matches(normalizedPath, cond));
+    const hasPositiveMatch = positiveConditions.length === 0 || positiveConditions.some(cond => matches(normalizedPath, cond));
+    return hasPositiveMatch && !hasNegativeMatch;
+}
+// mnfst:route.match:end
 
 // Handle route changes
 async function handleRouteChange() {
@@ -770,23 +873,10 @@ function routeMatches(element, normalizedPath, defined) {
     const routeCondition = element.getAttribute('x-route');
     if (!routeCondition) return null;
 
-    const conditions = routeCondition.split(',').map(cond => cond.trim());
-    if (conditions.includes('!*')) {
-        if (defined === undefined) defined = isRouteDefined(normalizedPath, collectDefinedRoutes());
-        return !defined;
-    }
-
-    const positiveConditions = conditions.filter(cond => !cond.startsWith('!'));
-    const negativeConditions = conditions
-        .filter(cond => cond.startsWith('!'))
-        .map(cond => cond.slice(1));
-    const hasNegativeMatch = negativeConditions.some(cond =>
-        window.ManifestRouting.matchesCondition(normalizedPath, cond)
-    );
-    const hasPositiveMatch = positiveConditions.length === 0 || positiveConditions.some(cond =>
-        window.ManifestRouting.matchesCondition(normalizedPath, cond)
-    );
-    return hasPositiveMatch && !hasNegativeMatch;
+    const match = window.ManifestRouting.conditionsMatch(routeCondition, normalizedPath);
+    if (match !== null) return match;
+    if (defined === undefined) defined = isRouteDefined(normalizedPath, collectDefinedRoutes());
+    return !defined;
 }
 
 // Cooperative check (defer plugin): is this route active for the current URL? Static MPA output always is.
@@ -806,6 +896,9 @@ function showRoute(element) {
     element.dispatchEvent(new CustomEvent('manifest:route-activate'));
     const wasHidden = element.hasAttribute('hidden');
     if (wasHidden) element.removeAttribute('hidden');
+    // A cloak added only because the route was hidden goes with it
+    if (element.__manifestRouteCloak && !hasXShow(element)) element.removeAttribute('x-cloak');
+    element.__manifestRouteCloak = false;
     const prior = element.__manifestRouteDisplay;
     if (prior) {
         element.__manifestRouteDisplay = null;
@@ -858,22 +951,22 @@ function processRouteVisibility(normalizedPath) {
     }
 }
 
-// Add x-cloak to route elements that don't have it
-function addXCloakToRouteElements() {
+// Cloak what the route pass hid and x-show elements (Alpine decides their display); matching routes keep painting
+function cloakRouteElements() {
     if (isPrerenderedStaticMPA()) return;
-    const routeElements = document.querySelectorAll('[x-route]:not([x-cloak])');
-    routeElements.forEach(element => {
-        element.setAttribute('x-cloak', '');
+    document.querySelectorAll('[x-route]:not([x-cloak])').forEach(element => {
+        if (element.hasAttribute('hidden') || hasXShow(element)) {
+            element.setAttribute('x-cloak', '');
+            element.__manifestRouteCloak = true;
+        }
     });
 }
 
 // Initialize visibility management
 function initializeVisibility() {
-    // Add x-cloak to route elements to prevent flash
-    addXCloakToRouteElements();
-
     // Process initial visibility (use logical path when app is in a subpath)
     processRouteVisibility(currentNormalizedPath());
+    cloakRouteElements();
 
     // Listen for route changes
     window.addEventListener('manifest:route-change', (event) => {
@@ -884,22 +977,14 @@ function initializeVisibility() {
     // Listen for component processing to ensure visibility is applied after components load
     window.addEventListener('manifest:components-processed', () => {
         if (isPrerenderedStaticMPA()) return;
-        // Add x-cloak to any new route elements
-        addXCloakToRouteElements();
         processRouteVisibility(currentNormalizedPath());
+        cloakRouteElements();
     });
 }
 
-// Add x-cloak immediately to prevent flash
 if (document.readyState === 'loading') {
-    // DOM is still loading, add x-cloak as soon as possible
-    document.addEventListener('DOMContentLoaded', () => {
-        addXCloakToRouteElements();
-        initializeVisibility();
-    });
+    document.addEventListener('DOMContentLoaded', initializeVisibility);
 } else {
-    // DOM is ready, add x-cloak immediately
-    addXCloakToRouteElements();
     initializeVisibility();
 }
 

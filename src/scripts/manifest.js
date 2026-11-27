@@ -1765,19 +1765,125 @@
 		setTimeout(settle, 0); // after this script finishes, so __manifestLoaderStarted is settled
 	}
 
-	// Cloak routes as the parser adds them, so none paints before the router; Alpine uncloaks
+	// mnfst:route.match:start — synced by the build from scripts/snippets/manifest.route.match.js; edit there
+// x-route matching, shared by the router and the loader's parse-time pass
+
+// Logical route path for a pathname under an app base path ('' at the root)
+function routeLogicalPath(pathname, base) {
+    if (!base) {
+        const p = (pathname || '/').replace(/\/$/, '') || '/';
+        if (p === '/' || p === '/index.html' || p === '/index') return '/';
+        return p.startsWith('/') ? p : '/' + p;
+    }
+    if (pathname === base || pathname === base + '/') return '/';
+    if (pathname.startsWith(base + '/')) {
+        let logical = pathname.slice(base.length) || '/';
+        if (logical === '/index.html' || logical === '/index') logical = '/';
+        return logical;
+    }
+    if (pathname === base + '/index.html' || pathname === base + '/index') return '/';
+    return pathname;
+}
+
+// One condition against a path; a leading locale code in the path is ignored
+function routePathMatches(path, condition, localizationCodes) {
+    const normalizedPath = path === '/' ? '/' : path.replace(/^\/+|\/+$/g, '') || '/';
+
+    let pathToCheck = normalizedPath;
+    if (localizationCodes.length > 0) {
+        const pathSegments = normalizedPath.split('/').filter(segment => segment);
+        if (pathSegments.length > 0 && localizationCodes.includes(pathSegments[0])) {
+            pathToCheck = pathSegments.slice(1).join('/') || '/';
+        }
+    }
+
+    // Wildcards
+    if (condition.includes('*')) {
+        if (condition === '*') return true;
+        const wildcardPattern = condition.replace('*', '');
+        const normalizedPattern = wildcardPattern.replace(/^\/+|\/+$/g, '');
+        return pathToCheck.startsWith(normalizedPattern + '/');
+    }
+
+    // Exact (=)
+    if (condition.startsWith('=')) {
+        const exactPath = condition.slice(1);
+        if (exactPath === '/') {
+            return pathToCheck === '/' || pathToCheck === '';
+        }
+        const normalizedExactPath = exactPath.replace(/^\/+|\/+$/g, '');
+        return pathToCheck === normalizedExactPath;
+    }
+
+    // Path and subpaths (/)
+    if (condition.startsWith('/')) {
+        if (condition === '/') {
+            return pathToCheck === '/' || pathToCheck === '';
+        }
+        const routePath = condition.replace(/^\//, '');
+        return pathToCheck === routePath || pathToCheck.startsWith(routePath + '/');
+    }
+
+    // Substring
+    return pathToCheck.includes(condition);
+}
+
+// A comma list of conditions ('!' negates); null when the list has '!*', which needs every defined route
+function routeConditionsMatch(routeCondition, normalizedPath, matches) {
+    const conditions = routeCondition.split(',').map(cond => cond.trim());
+    if (conditions.includes('!*')) return null;
+    const positiveConditions = conditions.filter(cond => !cond.startsWith('!'));
+    const negativeConditions = conditions
+        .filter(cond => cond.startsWith('!'))
+        .map(cond => cond.slice(1));
+    const hasNegativeMatch = negativeConditions.some(cond => matches(normalizedPath, cond));
+    const hasPositiveMatch = positiveConditions.length === 0 || positiveConditions.some(cond => matches(normalizedPath, cond));
+    return hasPositiveMatch && !hasNegativeMatch;
+}
+// mnfst:route.match:end
+
+	// Path the router will match, while parsing; null when a base path or prerender leaves it uncertain
+	function parsePagePath() {
+		if (document.querySelector('meta[name="manifest:prerendered"][content="1"], meta[name="manifest:router-base-depth"]')) return null;
+		const base = document.querySelector('meta[name="manifest:router-base"]')?.getAttribute('content');
+		if (base && base.replace(/^\/+|\/+$/g, '').trim()) return null;
+		try {
+			const href = document.querySelector('link[rel="manifest"]')?.getAttribute('href') || '/manifest.json';
+			if (new URL(href, location.href).pathname.replace(/\/[^/]*$/, '') !== '') return null;
+		} catch (_) { return null; }
+		const logical = routeLogicalPath(location.pathname, '');
+		return logical === '/' ? '/' : logical.replace(/^\/|\/$/g, '');
+	}
+
+	// Surely off-route: no reading of a leading locale segment (code or not) matches
+	function routeSurelyHidden(condition, path) {
+		const first = path.split('/').filter(Boolean)[0];
+		const readings = first && /^[a-z]{2}(-[A-Z]{2})?$/.test(first) ? [[], [first]] : [[]];
+		return readings.every(codes => routeConditionsMatch(condition, path, (p, c) => routePathMatches(p, c, codes)) === false);
+	}
+
+	// Cloak routes that surely don't match (and x-show ones) as the parser adds them; the matching route paints
 	function cloakRoutesWhileParsing() {
 		if (document.readyState !== 'loading' || typeof MutationObserver === 'undefined') return;
-		let prerendered = null;
-		const cloak = (el) => { if (!el.hasAttribute('x-cloak')) el.setAttribute('x-cloak', ''); };
+		let path;
+		const visit = (el) => {
+			if (el.hasAttribute('x-cloak')) return;
+			const condition = el.getAttribute('x-route');
+			let show = false;
+			for (const attr of el.attributes) if (attr.name === 'x-show' || attr.name.startsWith('x-show.')) show = true;
+			if (!show && !(condition && routeSurelyHidden(condition, path))) return;
+			el.setAttribute('x-cloak', '');
+			el.__manifestRouteCloak = true;
+		};
 		const observer = new MutationObserver((records) => {
-			if (prerendered === null && document.body) prerendered = !!document.querySelector('meta[name="manifest:prerendered"][content="1"]');
-			if (prerendered) return observer.disconnect();
+			if (path === undefined && document.body) path = parsePagePath();
+			if (path === null) return observer.disconnect();
+			if (path === undefined) return;
 			for (const record of records) {
 				for (const node of record.addedNodes) {
 					if (node.nodeType !== 1) continue;
-					if (node.hasAttribute('x-route')) cloak(node);
-					if (node.firstElementChild) node.querySelectorAll('[x-route]').forEach(cloak);
+					if (node.hasAttribute('x-route')) visit(node);
+					if (node.firstElementChild) node.querySelectorAll('[x-route]').forEach(visit);
 				}
 			}
 		});

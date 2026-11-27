@@ -210,6 +210,11 @@ const CONFIG = {
             'auth/manifest.appwrite.auth.config.js',
             'manifest.appwrite.presences.js'
         ],
+        'manifest.route.match.js': [
+            'manifest.js',
+            'router/manifest.router.main.js',
+            'router/manifest.router.navigation.js'
+        ],
         'manifest.vendor.js': [
             'manifest.markdown.js',
             'manifest.svg.js',
@@ -354,9 +359,9 @@ function syncScriptSnippets() {
                 process.exit(1);
             }
             const synced = content.slice(0, start) + body + content.slice(end + endMarker.length);
-            // Subscript carriers sync in place (buildSubscripts then embeds the
-            // fresh body); root-level plugins write to the output dir as before
-            const isSubscript = plugin.includes('/');
+            // Subscript carriers and the loader (copied from src) sync in place;
+            // other root-level plugins write to the output dir as before
+            const isSubscript = plugin.includes('/') || plugin === 'manifest.js';
             const outputPath = isSubscript ? sourcePath : path.join(MONOLITH_DIR, plugin);
             if (synced !== content || (SCRIPTS_OUT && !isSubscript)) fs.writeFileSync(outputPath, synced);
             console.log(`  \u2713 ${snippet} \u2192 ${plugin}`);
