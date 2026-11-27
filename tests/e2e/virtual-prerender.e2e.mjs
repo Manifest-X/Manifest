@@ -51,11 +51,23 @@ const INDEX = `<!doctype html><html><head><meta charset="utf-8"><title>virtual</
 <div id="inner" x-virtual style="${BOX}">
   <template x-for="o in people" :key="o.id"><div class="r" style="height:30px"><span x-text="'#' + o.id + ' ' + o.name"></span> <template x-for="k in [o.id, o.id + 1]" :key="k" data-prerender="dynamic"><i x-text="'c' + k + ' '"></i></template></div></template>
 </div>
+<div id="xifbefore" x-virtual style="${BOX}">
+  <template x-if="people.length"><div class="author" x-text="'notice ' + people.length"></div></template>
+  <template x-for="person in people" :key="person.id"><div class="r" style="height:30px" x-text="'#' + person.id + ' ' + person.name"></div></template>
+</div>
+<div id="xifafter" x-virtual style="${BOX}">
+  <template x-for="person in people" :key="person.id"><div class="r" style="height:30px" x-text="'#' + person.id + ' ' + person.name"></div></template>
+  <template x-if="people.length"><div class="author" x-text="'notice ' + people.length"></div></template>
+</div>
+<div id="loopbefore" x-virtual style="${BOX}">
+  <template x-for="c in ['a', 'b']" :key="c" data-prerender="dynamic"><span class="hdr" x-text="c"></span></template>
+  <template data-virtual x-for="person in people" :key="person.id"><div class="r" style="height:30px" x-text="'#' + person.id + ' ' + person.name"></div></template>
+</div>
 <div id="source" x-virtual style="${BOX}">
   <template x-for="row in $x.people" :key="row.id"><div class="r" style="height:30px" x-text="'#' + row.id + ' ' + row.name"></div></template>
 </div>
 </main></body></html>`
-const LISTS = ['local', 'recycle', 'table', 'gallery', 'masonry', 'inner', 'source']
+const LISTS = ['local', 'recycle', 'table', 'gallery', 'masonry', 'inner', 'xifbefore', 'xifafter', 'loopbefore', 'source']
 
 // A site rendered with the given virtual module (null: this tree's lib)
 function bake(virtualFrom) {
@@ -114,6 +126,9 @@ const rowsOf = (tab, id) => tab.evaluate((id) => {
     const rows = [...el.querySelectorAll('.r')].filter(r => !r.closest('template'))
     return {
         rows: rows.length,
+        dupes: rows.length - new Set(rows.map(r => r.textContent.trim())).size,
+        ignored: rows.filter(r => r.hasAttribute('x-ignore')).length,
+        authors: [...el.querySelectorAll('.author, .hdr')].map(a => a.textContent.trim()),
         blank: rows.filter(r => !r.textContent.trim()).length,
         first: rows[0] ? rows[0].textContent.trim().replace(/\s+/g, ' ') : null,
         spacers: el.querySelectorAll('[data-virtual-spacer]').length,
@@ -134,6 +149,7 @@ try {
         const spacers = id === 'masonry' ? 1 : 2
         check(`${id}: rows show text after hydration`, s.rows > 3 && s.blank === 0 && /^#0 P0/.test(s.first), s)
         check(`${id}: one set of spacers, list sized`, s.spacers === spacers && s.scrollHeight > 1000, s)
+        check(`${id}: one live list (no duplicate or frozen rows)`, s.dupes === 0 && s.ignored === 0, s)
     }
     for (const id of LISTS) {
         await tab.evaluate((id) => { document.getElementById(id).scrollTop = 4000 }, id)
@@ -156,6 +172,10 @@ try {
     check('inner x-for in rows renders', /^#(\d+) P\1 c\1 c\d+$/.test(inner || ''), inner)
     const badge = await tab.evaluate(() => document.querySelector('#masonry .author')?.textContent)
     check('masonry: author element beside the rows survives hydration', badge === 'badge 500', badge)
+    for (const [id, want] of [['xifbefore', ['notice 500']], ['xifafter', ['notice 500']], ['loopbefore', ['a', 'b']]]) {
+        const s = await rowsOf(tab, id)
+        check(`${id}: author template content renders once`, JSON.stringify(s.authors) === JSON.stringify(want), s.authors)
+    }
     check('no x-virtual warnings', !warns.some(w => w.includes('[x-virtual]')), warns.filter(w => w.includes('[x-virtual]')))
     const refs = errors.filter(e => /ReferenceError|is not defined/.test(e))
     check('no ReferenceError at hydration', refs.length === 0, refs.slice(0, 5))
@@ -167,10 +187,13 @@ try {
     const old = await open(browser, legacy.out)
     const oldRefs = old.errors.filter(e => /ReferenceError|is not defined/.test(e))
     check('legacy bake: no ReferenceError with the new module', oldRefs.length === 0, { count: oldRefs.length, first: oldRefs[0] })
-    for (const id of ['local', 'table', 'masonry', 'inner']) {
+    for (const id of ['local', 'table', 'masonry', 'inner', 'xifbefore', 'xifafter', 'loopbefore']) {
         const s = await rowsOf(old.tab, id)
         check(`legacy bake: ${id} keeps its baked text`, s.rows > 3 && s.blank === 0 && /^#0 P0/.test(s.first), s)
+        check(`legacy bake: ${id} starts no second list`, s.dupes === 0 && s.spacers === (id === 'masonry' ? 1 : 2), s)
     }
+    const hdr = await rowsOf(old.tab, 'loopbefore')
+    check('legacy bake: an author x-for beside the rows stays an ordinary loop', JSON.stringify(hdr.authors) === '["a","b"]', hdr.authors)
     const oldBadge = await old.tab.evaluate(() => document.querySelector('#masonry .author')?.textContent)
     check('legacy bake: masonry author element kept live', oldBadge === 'badge 500' && await old.tab.evaluate(() => !document.querySelector('#masonry .author').hasAttribute('x-ignore')), oldBadge)
     check('legacy bake: no x-virtual template warning', !old.warns.some(w => w.includes('expects a descendant')), old.warns.filter(w => w.includes('[x-virtual]')))

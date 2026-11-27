@@ -118,14 +118,17 @@ function adoptBaked(el) {
         const end = spacers[spacers.length - 1];
         for (let n = spacers[0].nextSibling; n && n !== end; n = n.nextSibling) rows.add(n);
     }
-    const template = [...host.children].find((n) => n.tagName === 'TEMPLATE' && !rows.has(n));
-    if (template && (template.hasAttribute('data-virtual-for') || template.hasAttribute('x-for'))) {
+    const templates = [...host.children].filter((n) => n.tagName === 'TEMPLATE' && !rows.has(n));
+    if (templates.some((t) => t.hasAttribute('data-virtual-for'))) {
         for (const n of rows) n.remove();
         for (const s of spacers) s.remove();
         return;
     }
+    // The rows template of an older bake has no directive left on it
+    const template = templates.find((t) => !hasAttr(t, (a) => a.startsWith('x-') || a.startsWith(':') || a.startsWith('@')));
     if (spacers.length === 1 && template) for (const n of host.children) if (n !== spacers[0] && clonedFrom(n, template)) rows.add(n);
     for (const n of rows) if (n.nodeType === 1) n.setAttribute('x-ignore', '');
+    frozen.add(el);
 }
 
 // Masonry item baked from the template: placed, same tag, every attribute but class/style as authored
@@ -137,6 +140,7 @@ function clonedFrom(n, template) {
 }
 
 const live = new WeakSet();   // x-virtual elements with a running list
+const frozen = new WeakSet(); // older bakes left as baked: no other template is taken for the list
 const baking = () => window.__manifestRender === true;
 
 function initializeVirtualPlugin() {
@@ -146,6 +150,7 @@ function initializeVirtualPlugin() {
         Alpine.interceptInit((el) => {
             if (el.nodeType !== 1 || !hasVirtual(el) || el.hasAttribute('x-ignore')) return;
             adoptBaked(el);
+            if (frozen.has(el)) return;
             const template = pickTemplate(el);
             if (template) stashFor(template);
         });
@@ -199,6 +204,7 @@ function initializeVirtualPlugin() {
         if (live.has(el)) return;
         // --- Find the template (may be nested, e.g. table > tbody > template) ---
         adoptBaked(el);
+        if (frozen.has(el)) return;
         const template = pickTemplate(el, true) || [...el.querySelectorAll('template')].find((t) => !ignoredIn(t, el));
         if (template) stashFor(template);
         const forExpr = template && (template.getAttribute('data-virtual-for') ?? template.getAttribute('x-for'));
