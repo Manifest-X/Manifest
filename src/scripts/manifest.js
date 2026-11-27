@@ -1495,40 +1495,25 @@
 			return null;
 		}
 	}
-	// This visitor needed the engine on this sheet in the last 7 days
+	// This visitor needed the engine on this sheet in the last 7 days (shadow mode keeps its own record)
+	const neededKey = (state) => state.mode === 'skip' ? TAILWIND_NEEDED_KEY : `${TAILWIND_NEEDED_KEY}:shadow`;
 	function engineRemembered(state) {
 		try {
-			const rec = JSON.parse(localStorage.getItem(TAILWIND_NEEDED_KEY) || 'null');
+			const rec = JSON.parse(localStorage.getItem(neededKey(state)) || 'null');
 			const age = rec ? Date.now() - rec.t : -1;
 			return !!rec && rec.href === state.href && rec.seed === state.seed && age >= 0 && age <= TAILWIND_CACHE_MAX_AGE;
 		} catch (e) {
 			return false;
 		}
 	}
-	// True once the sheet has rules; false when it ends empty, errors or takes 3 s
+	// Read now, never awaited: a sheet still loading means the engine, so boot never waits on it
 	function stampedSheetReadable(link) {
-		const read = () => {
-			try {
-				const rules = link.sheet && link.sheet.cssRules;
-				return !!(rules && rules.length);
-			} catch (e) {
-				return false;
-			}
-		};
-		if (read()) return Promise.resolve(true);
-		let fetched = false;
-		try { fetched = performance.getEntriesByName(link.href).some(e => e.responseEnd > 0); } catch (e) { }
-		return new Promise(resolve => {
-			const done = () => {
-				clearTimeout(timer);
-				link.removeEventListener('load', done);
-				link.removeEventListener('error', done);
-				resolve(read());
-			};
-			const timer = setTimeout(done, fetched ? 100 : 3000);
-			link.addEventListener('load', done);
-			link.addEventListener('error', done);
-		});
+		try {
+			const rules = link.sheet && link.sheet.cssRules;
+			return !!(rules && rules.length);
+		} catch (e) {
+			return false;
+		}
 	}
 	function decideTailwindStamp(link, cfg, plugins) {
 		const seed = link.getAttribute('data-tailwind-stamp') || '';
@@ -1549,33 +1534,34 @@
 			if (state.trigger || !state.accepted) return state.load;
 			state.trigger = { token, reason, at: Math.round(performance.now()) };
 			state.wouldSkip = false;
-			try { localStorage.setItem(TAILWIND_NEEDED_KEY, JSON.stringify({ href: state.href, seed, t: Date.now() })); } catch (e) { }
+			try { localStorage.setItem(neededKey(state), JSON.stringify({ href: state.href, seed, t: Date.now() })); } catch (e) { }
+			console.debug(`[Manifest] Tailwind engine ${state.mode === 'skip' ? 'loading' : 'would load'} for ${token ? `"${token}"` : reason}`);
 			window.dispatchEvent(new CustomEvent('manifest:tailwind-engine', { detail: { token, reason, mode: state.mode } }));
 			return state.mode === 'skip' ? state.loadEngine() : state.load;
 		};
 		const tokens = readStampTokens(seed);
-		state.decision = (async () => {
+		const decide = () => {
 			if (!TAILWIND_SEED || seed !== TAILWIND_SEED) return reject('seed');
 			if (!tokens) return reject('tokens');
 			if (tailwindAuthorBlocks().length) return reject('author-block');
 			if (!plugins.includes('utilities')) return reject('utilities');
 			if (window.__manifestRender === true || document.querySelector('meta[name="manifest:prerendered"]')) return reject('prerendered');
 			if (engineRemembered(state)) return reject('remembered');
-			if (!(await stampedSheetReadable(link))) return reject('sheet');
+			if (!stampedSheetReadable(link)) return reject('sheet');
 			Object.assign(state, { accepted: true, wouldSkip: true, tokens });
 			return true;
-		})().catch(() => reject('error'));
+		};
+		let verdict;
+		try { verdict = decide(); } catch (e) { verdict = reject('error'); }
+		state.decision = Promise.resolve(verdict);
 		return state;
 	}
 	// Eager engine for a stamped sheet: shadow mode always, skip mode on any doubt
 	function stampedTailwindLoad(link, cfg, plugins) {
 		const state = decideTailwindStamp(link, cfg, plugins);
-		if (state.mode === 'shadow') return state.loadEngine();
-		return state.decision.then(ok => {
-			if (!ok) return state.loadEngine();
-			if (!state.load) state.engine = 'skipped';
-			return null;
-		});
+		if (state.mode === 'shadow' || !state.accepted) return state.loadEngine();
+		state.engine = 'skipped';
+		return Promise.resolve(null);
 	}
 
 	// Tailwind engine output cache: written and watched by the utilities module (manifest.utilities.tailwind-cache.js)

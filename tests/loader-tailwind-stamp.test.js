@@ -7,6 +7,7 @@
  * Real-Chromium coverage: tests/e2e/tailwind-stamp.e2e.mjs. STAMP_LIB=<dir> runs it against another lib/.
  */
 import { readFileSync } from 'fs'
+import { createHash } from 'crypto'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -14,8 +15,10 @@ import { tailwindSeed } from '../src/scripts/manifest.tailwind.variants.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const LIB = process.env.STAMP_LIB || path.join(__dirname, '../lib')
-const ENGINE = readFileSync(path.join(__dirname, '../src/scripts/build.mjs'), 'utf8').match(/TAILWIND_V4_FILE: 'tailwind\.v(\d+\.\d+\.\d+)\.js'/)[1]
-const SEED = tailwindSeed(ENGINE)
+const ENGINE_FILE = readFileSync(path.join(__dirname, '../src/scripts/build.mjs'), 'utf8').match(/TAILWIND_V4_FILE: '(tailwind\.v(\d+\.\d+\.\d+)\.js)'/)
+const ENGINE = ENGINE_FILE[2]
+const HASH = createHash('sha256').update(readFileSync(path.join(__dirname, '../src/scripts', ENGINE_FILE[1]))).digest('hex').slice(0, 16)
+const SEED = tailwindSeed(ENGINE, undefined, HASH)
 const settle = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise(r => setTimeout(r, 0)) }
 const VERSION = '0.5.199-next.0'
 const engineScripts = () => document.querySelectorAll('script[src*="manifest.tailwind"]').length
@@ -154,12 +157,42 @@ for (const file of ['manifest.js', 'manifest.min.js']) {
             })
         }
 
-        it('skip mode with a sheet that ends unreadable: the engine loads', async () => {
+        it('skip mode with a sheet not readable yet: the engine loads at once, nothing waits for the sheet', async () => {
             boot({ headExtra: stampHead() })
-            await decided()
-            expect(engineScripts()).toBe(1)
             expect(window.Manifest.tailwindStamp).toMatchObject({ accepted: false, reason: 'sheet', engine: 'loaded' })
-        }, 10000)
+            await settle(2)
+            expect(engineScripts()).toBe(1)
+        })
+
+        it('a shadow-mode need is kept apart: skip mode later is not held back by it', async () => {
+            boot({ headExtra: stampHead({ mode: 'shadow' }), readable: true })
+            await decided()
+            window.__tailwindStamp.needEngine('skew-x-12', 'token')
+            expect(localStorage.getItem('tailwind-engine-needed')).toBe(null)
+            expect(JSON.parse(localStorage.getItem('tailwind-engine-needed:shadow')).seed).toBe(SEED)
+            for (const k of ['__manifestLoaderStarted', '__manifestLoaded', 'Manifest', '__tailwindStamp']) delete window[k]
+            boot({ headExtra: stampHead({ mode: 'shadow' }), readable: true })
+            await decided()
+            expect(window.Manifest.tailwindStamp.reason).toBe('remembered')
+            for (const k of ['__manifestLoaderStarted', '__manifestLoaded', 'Manifest', '__tailwindStamp']) delete window[k]
+            document.querySelectorAll('script[src*="manifest.tailwind"]').forEach((e) => e.remove())
+            boot({ headExtra: stampHead(), readable: true })
+            await decided()
+            expect(window.Manifest.tailwindStamp).toMatchObject({ accepted: true, engine: 'skipped' })
+            expect(engineScripts()).toBe(0)
+        })
+
+        it('logs one debug line when the engine is needed, nothing louder', async () => {
+            const debug = vi.spyOn(console, 'debug').mockImplementation(() => { })
+            const warn = vi.spyOn(console, 'warn')
+            boot({ headExtra: stampHead(), readable: true })
+            await decided()
+            window.__tailwindStamp.needEngine('skew-x-12', 'token')
+            window.__tailwindStamp.needEngine('rotate-3', 'token')
+            expect(debug.mock.calls.filter((c) => String(c[0]).includes('Tailwind engine')).length).toBe(1)
+            expect(warn.mock.calls.filter((c) => String(c[0]).includes('Tailwind')).length).toBe(0)
+            debug.mockRestore(); warn.mockRestore()
+        })
 
         it('a sheet whose cssRules throws (cross-origin) is unreadable', async () => {
             boot({ headExtra: stampHead() })
@@ -167,7 +200,7 @@ for (const file of ['manifest.js', 'manifest.min.js']) {
             await decided()
             expect(window.Manifest.tailwindStamp.reason).toBe('sheet')
             expect(engineScripts()).toBe(1)
-        }, 10000)
+        })
 
         for (const mode of ['shadow', '', 'on']) {
             it(`mode ${JSON.stringify(mode)} is shadow: the engine loads at once and the verdict is recorded`, async () => {
