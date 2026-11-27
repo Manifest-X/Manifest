@@ -55,6 +55,25 @@ let yamlLoadingPromise = null;
 let papaparse = null;
 let csvLoadingPromise = null;
 
+// CSV text shared by locale discovery, header checks and content loads until manifest:ready: one request per file per boot
+const bootTextFetches = new Map();
+let bootTextOpen = true;
+if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('manifest:ready', () => { bootTextOpen = false; bootTextFetches.clear(); }, { once: true });
+}
+function fetchText(url) {
+    let key = url;
+    try { key = new URL(url, window.location.href).href; } catch (_) { /* keep raw */ }
+    const shared = bootTextOpen && bootTextFetches.get(key);
+    if (shared) return shared;
+    const pending = fetch(url).then(async (r) => ({ ok: r.ok, status: r.status, text: r.ok ? await r.text() : '' }));
+    if (bootTextOpen) {
+        bootTextFetches.set(key, pending);
+        pending.then((res) => { if (!res.ok) bootTextFetches.delete(key); }, () => bootTextFetches.delete(key));
+    }
+    return pending;
+}
+
 // Collect all path-like strings from manifest.data (recursive; includes nested locale objects)
 function collectDataPaths(manifest) {
     const paths = [];
@@ -500,6 +519,12 @@ function resolveDataPath(filePath) {
 // Load a local file (JSON, YAML, CSV)
 async function loadLocalFile(filePath, options = {}) {
     const resolved = resolveDataPath(filePath);
+    if (typeof resolved === 'string' && resolved.endsWith('.csv')) {
+        const shared = await fetchText(resolved);
+        if (!shared.ok) throw new Error(`[Manifest Data] File not found: ${resolved} (${shared.status})`);
+        await loadCSVParser();
+        return parseCSVToNestedObject(shared.text, { currentLocale: options.currentLocale });
+    }
     const response = await fetch(resolved);
 
     // Check if file exists
@@ -552,5 +577,6 @@ window.ManifestDataLoaders = {
     setNestedValue,
     numericKeyObjectToArray,
     resolveDataPath,
-    loadLocalFile
+    loadLocalFile,
+    fetchText
 };

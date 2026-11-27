@@ -1420,9 +1420,8 @@ function setupLocaleChangeListener() {
                     // Simple CSV file path - check if it has locale columns
                     // We'll check by fetching the header row (async, but we'll wait for it)
                     csvChecks.push(
-                        fetch(config)
-                            .then(response => response.text())
-                            .then(text => {
+                        window.ManifestDataLoaders.fetchText(config)
+                            .then(({ text }) => {
                                 const lines = text.split('\n').filter(line => line.trim());
                                 if (lines.length > 0) {
                                     const headers = lines[0].split(',').map(h => h.trim());

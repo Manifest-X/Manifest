@@ -1851,6 +1851,11 @@ async function initializeDataSourcesPlugin() {
                         preloadNames.map(async (name) => {
                             try {
                                 const data = await loadDataSource(name, locale);
+                                // Locale switched mid-load: the locale listener already reloaded this source
+                                const source = manifest.data[name];
+                                const localeSensitive = !!(source && typeof source === 'object' && (source.locales || source[locale]));
+                                const liveLocale = Alpine.store('locale')?.current || document.documentElement.lang || locale;
+                                if (localeSensitive && liveLocale !== locale) return;
                                 if (data != null) {
                                     // Boot landing: every pre-loaded source lands in ONE flush
                                     await landRows(name, data, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, allowDuringInit: true });

@@ -294,76 +294,61 @@ function initializeLocalizationPlugin() {
                 throw new Error('Invalid manifest structure');
             }
 
-            // Collect unique locales across data sources
-            const locales = new Set();
-            if (manifest.data && typeof manifest.data === 'object') {
-                for (const [sourceName, collection] of Object.entries(manifest.data)) {
-                    // Skip Appwrite collections (their config keys aren't locales)
-                    if (isAppwriteDataSource(collection)) continue;
-                    if (collection && typeof collection === 'object') {
-                        // Single-file multi-locale CSV, e.g. {"locales": "file.csv"}
-                        if (collection.locales && typeof collection.locales === 'string' && collection.locales.endsWith('.csv')) {
-                            try {
-                                const base = typeof window.getManifestBase === 'function' ? window.getManifestBase() : '';
-                                const localesPath = collection.locales.startsWith('/') ? collection.locales.slice(1) : collection.locales;
-                                const localesUrl = (collection.locales.startsWith('http')) ? collection.locales : (base + localesPath);
-                                const csvResponse = await fetch(localesUrl);
-                                if (csvResponse.ok) {
-                                    const csvText = await csvResponse.text();
-                                    // Parse CSV header to get locale columns
-                                    const lines = csvText.split('\n').filter(line => line.trim());
-                                    if (lines.length > 0) {
-                                        const headers = lines[0].split(',').map(h => h.trim());
-                                        // First column is 'key', rest are locale columns
-                                        headers.forEach(header => {
-                                            if (header !== 'key' && isValidLanguageCode(header)) {
-                                                locales.add(header);
-                                            }
-                                        });
-                                    }
-                                }
-                            } catch (csvError) {
-                                console.warn('[Manifest Localization] Error loading locales CSV:', csvError);
-                            }
-                        }
-
-                        // Per-locale keys, e.g. {"en": "en.csv", "fr": "fr.csv"}
-                        Object.keys(collection).forEach(key => {
-                            const reservedKeys = ['url', 'headers', 'params', 'transform', 'defaultValue', 'locales'];
-                            if (isValidLanguageCode(key) && !reservedKeys.includes(key)) {
-                                locales.add(key);
-                            }
-                        });
-                    } else if (typeof collection === 'string' && collection.endsWith('.csv')) {
-                        // Bare CSV path — inspect for locale columns
+            // Collect unique locales across data sources; CSV headers fetched in parallel, merged in source order
+            const fetchText = window.ManifestDataLoaders?.fetchText
+                || ((url) => fetch(url).then(async (r) => ({ ok: r.ok, status: r.status, text: r.ok ? await r.text() : '' })));
+            const csvUrl = (path) => {
+                if (path.startsWith('http')) return path;
+                const base = typeof window.getManifestBase === 'function' ? window.getManifestBase() : '';
+                return base + (path.startsWith('/') ? path.slice(1) : path);
+            };
+            const csvHeaders = async (path) => {
+                const res = await fetchText(csvUrl(path));
+                if (!res.ok) return null;
+                const lines = res.text.split('\n').filter(line => line.trim());
+                return lines.length > 0 ? lines[0].split(',').map(h => h.trim()) : null;
+            };
+            const reservedKeys = ['url', 'headers', 'params', 'transform', 'defaultValue', 'locales'];
+            const sourceLocales = async (collection) => {
+                const found = [];
+                if (collection && typeof collection === 'object') {
+                    // Single-file multi-locale CSV, e.g. {"locales": "file.csv"}
+                    if (collection.locales && typeof collection.locales === 'string' && collection.locales.endsWith('.csv')) {
                         try {
-                            const base = typeof window.getManifestBase === 'function' ? window.getManifestBase() : '';
-                            const csvPath = collection.startsWith('/') ? collection.slice(1) : collection;
-                            const csvUrl = collection.startsWith('http') ? collection : (base + csvPath);
-                            const csvResponse = await fetch(csvUrl);
-                            if (csvResponse.ok) {
-                                const csvText = await csvResponse.text();
-                                const lines = csvText.split('\n').filter(line => line.trim());
-                                if (lines.length > 0) {
-                                    const headers = lines[0].split(',').map(h => h.trim());
-                                    // Localized CSV ('key' + locale columns) vs tabular ('id')
-                                    const firstHeader = headers[0]?.toLowerCase();
-                                    if (firstHeader === 'key' && headers.length > 1) {
-                                        headers.forEach(header => {
-                                            if (header !== 'key' && isValidLanguageCode(header)) {
-                                                locales.add(header);
-                                            }
-                                        });
-                                        if (locales.size > 0) {
-                                        }
-                                    }
-                                }
-                            }
+                            const headers = await csvHeaders(collection.locales);
+                            // First column is 'key', rest are locale columns
+                            if (headers) headers.forEach(header => {
+                                if (header !== 'key' && isValidLanguageCode(header)) found.push(header);
+                            });
                         } catch (csvError) {
-                            console.warn('[Manifest Localization] Error checking simple CSV for locales:', csvError);
+                            console.warn('[Manifest Localization] Error loading locales CSV:', csvError);
                         }
                     }
+                    // Per-locale keys, e.g. {"en": "en.csv", "fr": "fr.csv"}
+                    Object.keys(collection).forEach(key => {
+                        if (isValidLanguageCode(key) && !reservedKeys.includes(key)) found.push(key);
+                    });
+                } else if (typeof collection === 'string' && collection.endsWith('.csv')) {
+                    // Bare CSV path — localized ('key' + locale columns) vs tabular ('id')
+                    try {
+                        const headers = await csvHeaders(collection);
+                        if (headers && headers[0]?.toLowerCase() === 'key' && headers.length > 1) {
+                            headers.forEach(header => {
+                                if (header !== 'key' && isValidLanguageCode(header)) found.push(header);
+                            });
+                        }
+                    } catch (csvError) {
+                        console.warn('[Manifest Localization] Error checking simple CSV for locales:', csvError);
+                    }
                 }
+                return found;
+            };
+            const locales = new Set();
+            if (manifest.data && typeof manifest.data === 'object') {
+                // Skip Appwrite collections (their config keys aren't locales)
+                const sources = Object.values(manifest.data).filter(collection => !isAppwriteDataSource(collection));
+                const perSource = await Promise.all(sources.map(sourceLocales));
+                perSource.forEach(list => list.forEach(code => locales.add(code)));
             }
 
             // No locales found — fall back to HTML lang or 'en'
