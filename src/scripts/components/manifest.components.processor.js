@@ -122,119 +122,115 @@ window.ManifestComponentsProcessor = {
         };
         topLevelElements.forEach(processScripts);
         topLevelElements = Array.from(container.children);
-        // Collect properties from placeholder attributes
-        const props = {};
+        // Props come only from attribute text the author wrote. An attribute
+        // Alpine wrote from a binding (:foo, x-bind:foo, x-bind="{...}") holds
+        // data, so it never becomes expression source.
+        const BOUND = /^(?::|x-bind:)([^.]+)/;
+        const written = element._x_bindings || {};
+        const boundNames = new Set();
         Array.from(element.attributes).forEach(attr => {
-            if (attr.name !== name && attr.name !== 'class' && !attr.name.startsWith('data-')) {
-                // Store original case and lowercase
-                props[attr.name] = attr.value;
-                props[attr.name.toLowerCase()] = attr.value;
-                // Alpine bindings (:foo): also store without the colon
-                if (attr.name.startsWith(':')) {
-                    const keyWithoutColon = attr.name.substring(1);
-                    props[keyWithoutColon] = attr.value;
-                    props[keyWithoutColon.toLowerCase()] = attr.value;
-                }
-            }
+            const m = attr.name.match(BOUND);
+            if (m) boundNames.add(m[1].toLowerCase());
         });
+        const props = {};
+        const setProp = (key, entry) => {
+            props[key] = entry;
+            props[key.toLowerCase()] = entry;
+        };
+        Array.from(element.attributes).forEach(attr => {
+            if (attr.name === name || attr.name === 'class' || attr.name.startsWith('data-')) return;
+            const m = attr.name.match(BOUND);
+            if (m) {
+                const entry = { text: attr.value, bound: true };
+                setProp(attr.name, entry);
+                setProp(m[1], entry);
+                return;
+            }
+            if (boundNames.has(attr.name.toLowerCase()) || Object.prototype.hasOwnProperty.call(written, attr.name)) return;
+            setProp(attr.name, { text: attr.value, bound: false });
+        });
+        const isBlank = (v) => !v || v.trim() === '';
+        // Bound prop as a value, for sinks that aren't expressions (class, plain attributes)
+        const valueOf = (prop) => {
+            if (!prop) return '';
+            if (!prop.bound) return prop.text;
+            if (isBlank(prop.text) || !window.Alpine || typeof window.Alpine.evaluate !== 'function') return '';
+            try {
+                const v = window.Alpine.evaluate(element, prop.text);
+                return v == null || v === false ? '' : String(v);
+            } catch (e) {
+                return '';
+            }
+        };
+        // $x paths on x-for/if/show: optional-chain + fallback until the source loads
+        const guardX = (expr, directive) => {
+            if ((directive === 'x-for' || directive === 'x-if' || directive === 'x-show') && expr.startsWith('$x') && !expr.includes('??')) {
+                return `${expr.replace(/\./g, '?.')} ?? ${directive === 'x-for' ? '[]' : 'false'}`;
+            }
+            return expr;
+        };
+        const MODIFY = /\$modify\(['"]([^'"]+)['"]\)/g;
         // Process $modify usage in all elements
         const processElementProps = (el) => {
             Array.from(el.attributes).forEach(attr => {
                 const value = attr.value.trim();
-                if (value.includes('$modify(')) {
-                    const propMatch = value.match(/\$modify\(['"]([^'"]+)['"]\)/);
-                    if (propMatch) {
-                        const propName = propMatch[1].toLowerCase();
-                        const propValue = props[propName] || '';
-                        if (attr.name === 'class') {
-                            const existingClasses = el.getAttribute('class') || '';
-                            const newClasses = existingClasses
-                                .replace(new RegExp(`\$modify\(['"]${propName}['"]\)`, 'i'), propValue)
-                                .split(' ')
-                                .filter(Boolean)
-                                .join(' ');
-                            el.setAttribute('class', newClasses);
-                        } else if (attr.name === 'x-icon') {
-                            // x-icon should get the raw value, not wrapped for Alpine evaluation
-                            el.setAttribute(attr.name, propValue);
-                        } else if (attr.name === 'x-show' || attr.name === 'x-if') {
-                            // x-show and x-if expect boolean expressions, convert string to boolean check
-                            if (value !== `$modify('${propName}')`) {
-                                const newValue = value.replace(
-                                    /\$modify\(['"]([^'"]+)['"]\)/g,
-                                    (_, name) => {
-                                        const val = props[name.toLowerCase()] || '';
-                                        // Convert to boolean check - true if value exists and is not empty
-                                        return val ? 'true' : 'false';
-                                    }
-                                );
-                                el.setAttribute(attr.name, newValue);
-                            } else {
-                                // Simple replacement - check if prop exists and is not empty
-                                const booleanValue = propValue && propValue.trim() !== '' ? 'true' : 'false';
-                                el.setAttribute(attr.name, booleanValue);
-                            }
-                        } else if (
-                            attr.name.startsWith('x-') ||
-                            attr.name.startsWith(':') ||
-                            attr.name.startsWith('@') ||
-                            attr.name.startsWith('x-bind:') ||
-                            attr.name.startsWith('x-on:')
-                        ) {
-                            // For Alpine directives, properly quote string values
-                            if (value !== `$modify('${propName}')`) {
-                                // Handle mixed content with multiple $modify() calls
-                                const newValue = value.replace(
-                                    /\$modify\(['"]([^'"]+)['"]\)/g,
-                                    (_, name) => {
-                                        const val = props[name.toLowerCase()] || '';
-                                        // For expressions with fallbacks (||), use null for empty/whitespace values
-                                        if (!val || val.trim() === '' || /^[\r\n\t\s]+$/.test(val)) {
-                                            return value.includes('||') ? 'null' : "''";
-                                        }
-                                        // $-prefixed values are Alpine expressions — don't quote.
-                                        if (val.startsWith('$')) {
-                                            // Guard $x data-source expressions on x-for/if/show against
-                                            // errors before the source loads: optional-chain + fallback.
-                                            if ((attr.name === 'x-for' || attr.name === 'x-if' || attr.name === 'x-show') && val.startsWith('$x') && !val.includes('??')) {
-                                                let safeVal = val.replace(/\./g, '?.');
-                                                if (attr.name === 'x-for') {
-                                                    return `${safeVal} ?? []`;
-                                                } else {
-                                                    return `${safeVal} ?? false`;
-                                                }
-                                            }
-                                            return val;
-                                        }
-                                        // x-for/if/show can hold expressions (e.g. "card in $x.data.items") — preserve as-is.
-                                        if (attr.name === 'x-for' || attr.name === 'x-if' || attr.name === 'x-show') {
-                                            return val;
-                                        }
-                                        // Quote everything else so it's treated as a string.
-                                        return `'${escapeForSingleQuotedJsString(val)}'`;
-                                    }
-                                );
-                                el.setAttribute(attr.name, newValue);
-                            } else {
-                                // Simple $modify() replacement
-                                if (!propValue || propValue.trim() === '' || /^[\r\n\t\s]+$/.test(propValue)) {
-                                    // For empty/whitespace values, remove the attribute
-                                    el.removeAttribute(attr.name);
-                                } else {
-                                    // If value starts with $, it's an Alpine expression - don't quote
-                                    if (propValue.startsWith('$')) {
-                                        el.setAttribute(attr.name, propValue);
-                                    } else {
-                                        // Always quote string values and escape special characters
-                                        const quotedValue = `'${escapeForSingleQuotedJsString(propValue)}'`;
-                                        el.setAttribute(attr.name, quotedValue);
-                                    }
-                                }
-                            }
-                        } else {
-                            el.setAttribute(attr.name, propValue);
-                        }
+                if (!value.includes('$modify(')) return;
+                const propMatch = value.match(/\$modify\(['"]([^'"]+)['"]\)/);
+                if (!propMatch) return;
+                const propName = propMatch[1].toLowerCase();
+                const prop = props[propName];
+                const simple = value === `$modify('${propName}')`;
+                if (attr.name === 'class') {
+                    const newClasses = value
+                        .replace(MODIFY, (_, n) => valueOf(props[n.toLowerCase()]))
+                        .split(' ')
+                        .filter(Boolean)
+                        .join(' ');
+                    el.setAttribute('class', newClasses);
+                } else if (attr.name === 'x-icon') {
+                    // x-icon takes a raw icon name or an expression
+                    el.setAttribute(attr.name, prop ? prop.text : '');
+                } else if (attr.name === 'x-show' || attr.name === 'x-if') {
+                    // Static props test presence; bound props test their value
+                    const test = (p) => p && p.bound && !isBlank(p.text)
+                        ? guardX(p.text.trim(), attr.name)
+                        : (p && !isBlank(p.text) ? 'true' : 'false');
+                    if (simple) {
+                        el.setAttribute(attr.name, test(prop));
+                    } else {
+                        el.setAttribute(attr.name, value.replace(MODIFY, (_, n) => {
+                            const p = props[n.toLowerCase()];
+                            return p && p.bound && !isBlank(p.text) ? `(${test(p)})` : test(p);
+                        }));
                     }
+                } else if (
+                    attr.name.startsWith('x-') ||
+                    attr.name.startsWith(':') ||
+                    attr.name.startsWith('@')
+                ) {
+                    if (!simple) {
+                        el.setAttribute(attr.name, value.replace(MODIFY, (_, n) => {
+                            const p = props[n.toLowerCase()];
+                            const val = p ? p.text : '';
+                            // Empty: null where a || fallback follows
+                            if (isBlank(val)) return value.includes('||') ? 'null' : "''";
+                            // Bound: the author's expression, evaluated in the instance's scope
+                            if (p.bound) return `(${guardX(val.trim(), attr.name)})`;
+                            // Static $-prefixed values are expressions the author wrote
+                            if (val.startsWith('$')) return guardX(val, attr.name);
+                            // x-for can hold an author expression (e.g. "[1, 2]")
+                            if (attr.name === 'x-for') return val;
+                            return `'${escapeForSingleQuotedJsString(val)}'`;
+                        }));
+                    } else if (!prop || isBlank(prop.text)) {
+                        el.removeAttribute(attr.name);
+                    } else if (prop.bound || prop.text.startsWith('$')) {
+                        el.setAttribute(attr.name, prop.text);
+                    } else {
+                        el.setAttribute(attr.name, `'${escapeForSingleQuotedJsString(prop.text)}'`);
+                    }
+                } else {
+                    el.setAttribute(attr.name, simple ? valueOf(prop) : value.replace(MODIFY, (_, n) => valueOf(props[n.toLowerCase()])));
                 }
             });
             Array.from(el.children).forEach(processElementProps);
