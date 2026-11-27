@@ -44,6 +44,13 @@ describe('engine-skip gate lists', () => {
         expect(bare.filter((t, i) => !hits[i])).toEqual([])
     })
 
+    it('every bare utility key the engine styles is listed (filter has a default, not in getClassList)', () => {
+        const keys = [...new Set([...ds.utilities.keys('static'), ...ds.utilities.keys('functional')].map((k) => k.replace(/^-/, '')))].filter((k) => !/[-:[\/!.(]/.test(k))
+        const hits = emits(keys)
+        expect(keys.filter((k, i) => hits[i] && !bare.includes(k))).toEqual([])
+        expect(bare).toContain('filter')
+    })
+
     it('no bare name outside the list emits a rule (every root the engine knows)', () => {
         const roots = new Set()
         for (const [c] of ds.getClassList()) for (const r of [c, c.replace(/^-/, '').split('-')[0]]) if (r && !/[-:[\/!.]/.test(r)) roots.add(r)

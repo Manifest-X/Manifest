@@ -793,8 +793,9 @@ async function engineGateLists() {
     const emits = (list) => ds.candidatesToCss(list).map(Boolean);
     const isBare = (c) => !/[-:[\/!.]/.test(c);
 
-    // Every bare name the engine knows: listed bare classes plus the roots of listed ones (rounded from rounded-md)
+    // Every bare name the engine could style: bare utility keys (filter: a default, not listed), listed bare classes and their roots
     const roots = new Set();
+    for (const kind of ['static', 'functional']) for (const k of ds.utilities.keys(kind)) if (isBare(k.replace(/^-/, ''))) roots.add(k.replace(/^-/, ''));
     for (const [c] of ds.getClassList()) {
         if (isBare(c)) roots.add(c);
         const root = c.replace(/^-/, '').split('-')[0];
