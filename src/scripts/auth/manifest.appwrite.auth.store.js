@@ -193,6 +193,8 @@ function initializeAuthStore() {
         otpPhrase: null, // Email OTP: security phrase to display (when enabled; phone has none)
         _otpUserId: null, // OTP: userId returned by createEmailToken/createPhoneToken, used by verifyOTP
         _otpMigrationTicket: null, // OTP: { ticket, userId } guest-migration ticket, kept across failed verify attempts
+        passkeys: [], // Passkeys of the signed-in user, loaded by listPasskeys()
+        passkeySupported: false, // Browser has WebAuthn
         teams: [], // List of user's teams
         currentTeam: null, // Currently selected/active team
         startTeamId: null, // App-chosen team to start on when the teams first load (used if the user has it)
@@ -360,17 +362,18 @@ function initializeAuthStore() {
             return null;
         },
 
-        // Get authentication method (anonymous, magic, otp, phone, oauth)
+        // Get authentication method (anonymous, magic, otp, phone, passkey, oauth)
         getMethod() {
             if (!this.session) return null;
             // Appwrite session.provider: anonymous | magic-url | email (OTP) |
-            // token (OTP, some versions) | phone | oauth2 (or a specific provider).
+            // token (OTP, some versions) | phone | passkey | oauth2 (or a specific provider).
             switch (this.session.provider) {
                 case 'anonymous': return 'anonymous';
                 case 'magic-url': return 'magic';
                 case 'email':     return 'otp';   // this plugin uses email tokens for OTP
                 case 'token':     return 'otp';
                 case 'phone':     return 'phone';
+                case 'passkey':   return 'passkey';
                 case 'oauth2':    return 'oauth';
                 default:          return this.session.provider ? 'oauth' : null;
             }
