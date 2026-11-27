@@ -30,7 +30,7 @@ const BOX = 'height:300px;width:600px;overflow:auto'
 
 const INDEX = `<!doctype html><html><head><meta charset="utf-8"><title>virtual</title>
 <script src="/lib/manifest.js" data-plugins="data,virtual" data-plugin-base="/lib" data-alpine="/alpine.js"></script></head>
-<body><main x-data="{ people: ${LOCAL} }">
+<body><main x-data="{ people: ${LOCAL}, term: '', clicked: false }">
 <button id="jump" @click="$virtual('local').scrollToIndex(250)">jump</button>
 <div id="local" x-virtual style="${BOX}">
   <template x-for="person in people" :key="person.id"><div class="r" style="height:30px" x-text="'#' + person.id + ' ' + person.name"></div></template>
@@ -63,11 +63,23 @@ const INDEX = `<!doctype html><html><head><meta charset="utf-8"><title>virtual</
   <template x-for="c in ['a', 'b']" :key="c" data-prerender="dynamic"><span class="hdr" x-text="c"></span></template>
   <template data-virtual x-for="person in people" :key="person.id"><div class="r" style="height:30px" x-text="'#' + person.id + ' ' + person.name"></div></template>
 </div>
+<div id="tplcls" x-virtual style="${BOX}">
+  <template x-for="person in people" :key="person.id" :class="'x'"><div class="r" style="height:30px" x-text="'#' + person.id + ' ' + person.name"></div></template>
+</div>
+<div id="tplclick" x-virtual style="${BOX}">
+  <template x-for="person in people" :key="person.id" @click="clicked = true"><div class="r" style="height:30px" x-text="'#' + person.id + ' ' + person.name"></div></template>
+</div>
+<div id="tplmagic" x-virtual style="${BOX}">
+  <template x-for="row in $x.people.$search(term, 'name')" :key="row.id"><div class="r" style="height:30px" x-text="'#' + row.id + ' ' + row.name"></div></template>
+</div>
+<div id="masref" x-virtual="{ mode: 'masonry', columns: 3, gap: 4, height: b => b.h }" style="${BOX};position:relative">
+  <template x-ref="rows" x-for="block in people" :key="block.id"><div class="r" :style="'height:' + block.h + 'px'" x-text="'#' + block.id + ' ' + block.name"></div></template>
+</div>
 <div id="source" x-virtual style="${BOX}">
   <template x-for="row in $x.people" :key="row.id"><div class="r" style="height:30px" x-text="'#' + row.id + ' ' + row.name"></div></template>
 </div>
 </main></body></html>`
-const LISTS = ['local', 'recycle', 'table', 'gallery', 'masonry', 'inner', 'xifbefore', 'xifafter', 'loopbefore', 'source']
+const LISTS = ['local', 'recycle', 'table', 'gallery', 'masonry', 'inner', 'xifbefore', 'xifafter', 'loopbefore', 'tplcls', 'tplclick', 'tplmagic', 'masref', 'source']
 
 // A site rendered with the given virtual module (null: this tree's lib)
 function bake(virtualFrom) {
@@ -142,14 +154,15 @@ const browser = await puppeteer.launch({ headless: 'shell' })
 try {
     const html = fs.readFileSync(path.join(fresh.out, 'index.html'), 'utf8')
     check('baked HTML keeps row text for crawlers', html.includes('#3 P3'))
+    check('baked spacers carry the render mark', (html.match(/data-virtual-spacer="baked"/g) || []).length === 2 * 12 + 2, (html.match(/data-virtual-spacer="baked"/g) || []).length)
 
     const { tab, errors, warns, server } = await open(browser, fresh.out)
     for (const id of LISTS) {
         const s = await rowsOf(tab, id)
-        const spacers = id === 'masonry' ? 1 : 2
+        const spacers = /^mas/.test(id) ? 1 : 2
         check(`${id}: rows show text after hydration`, s.rows > 3 && s.blank === 0 && /^#0 P0/.test(s.first), s)
         check(`${id}: one set of spacers, list sized`, s.spacers === spacers && s.scrollHeight > 1000, s)
-        check(`${id}: one live list (no duplicate or frozen rows)`, s.dupes === 0 && s.ignored === 0, s)
+        check(`${id}: one live list (no duplicate or frozen rows)`, s.dupes === 0 && s.ignored === 0 && s.rows <= (id === 'gallery' ? 80 : 40), s)
     }
     for (const id of LISTS) {
         await tab.evaluate((id) => { document.getElementById(id).scrollTop = 4000 }, id)
@@ -168,6 +181,13 @@ try {
         return { scrollTop: el.scrollTop, offset: row ? Math.round(row.getBoundingClientRect().top - top) : null }
     })
     check('scrollToIndex(250) lands on a prerendered list', landed.scrollTop > 0 && landed.offset !== null && Math.abs(landed.offset) <= 1, landed)
+    const restored = await tab.evaluate(async () => {
+        const el = document.getElementById('tplcls')
+        el.scrollTop = 0
+        const node = await Alpine.$data(el).$virtual('tplcls').scrollToIndex(250)
+        return { text: node && node.textContent.trim(), offset: node ? Math.round(node.getBoundingClientRect().top - el.getBoundingClientRect().top) : null }
+    })
+    check('tplcls: scrollToIndex(250) lands', restored.text === '#250 P250' && Math.abs(restored.offset) <= 1, restored)
     const inner = await tab.evaluate(() => document.querySelector('#inner .r')?.textContent.replace(/\s+/g, ' ').trim())
     check('inner x-for in rows renders', /^#(\d+) P\1 c\1 c\d+$/.test(inner || ''), inner)
     const badge = await tab.evaluate(() => document.querySelector('#masonry .author')?.textContent)
@@ -177,6 +197,8 @@ try {
         check(`${id}: author template content renders once`, JSON.stringify(s.authors) === JSON.stringify(want), s.authors)
     }
     check('no x-virtual warnings', !warns.some(w => w.includes('[x-virtual]')), warns.filter(w => w.includes('[x-virtual]')))
+    const marks = await tab.evaluate(() => document.querySelectorAll('[data-virtual-spacer="baked"], [data-virtual-row]').length)
+    check('no render marks on the live page', marks === 0, marks)
     const refs = errors.filter(e => /ReferenceError|is not defined/.test(e))
     check('no ReferenceError at hydration', refs.length === 0, refs.slice(0, 5))
     check('no page errors', errors.length === 0, errors.slice(0, 5))
@@ -187,10 +209,10 @@ try {
     const old = await open(browser, legacy.out)
     const oldRefs = old.errors.filter(e => /ReferenceError|is not defined/.test(e))
     check('legacy bake: no ReferenceError with the new module', oldRefs.length === 0, { count: oldRefs.length, first: oldRefs[0] })
-    for (const id of ['local', 'table', 'masonry', 'inner', 'xifbefore', 'xifafter', 'loopbefore']) {
+    for (const id of ['local', 'table', 'masonry', 'inner', 'xifbefore', 'xifafter', 'loopbefore', 'tplcls', 'tplclick', 'tplmagic', 'masref']) {
         const s = await rowsOf(old.tab, id)
         check(`legacy bake: ${id} keeps its baked text`, s.rows > 3 && s.blank === 0 && /^#0 P0/.test(s.first), s)
-        check(`legacy bake: ${id} starts no second list`, s.dupes === 0 && s.spacers === (id === 'masonry' ? 1 : 2), s)
+        check(`legacy bake: ${id} starts no second list`, s.dupes === 0 && s.rows <= 40 && s.spacers === (/^mas/.test(id) ? 1 : 2), s)
     }
     const hdr = await rowsOf(old.tab, 'loopbefore')
     check('legacy bake: an author x-for beside the rows stays an ordinary loop', JSON.stringify(hdr.authors) === '["a","b"]', hdr.authors)
