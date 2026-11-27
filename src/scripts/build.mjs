@@ -98,6 +98,7 @@ const CONFIG = {
         'manifest.appwrite.auth.users.magic.js',
         'manifest.appwrite.auth.users.otp.js',
         'manifest.appwrite.auth.users.phone.js',
+        'manifest.appwrite.auth.users.passkey.js',
         'manifest.appwrite.auth.users.oauth.js',
         'manifest.appwrite.auth.users.callbacks.js'
     ],

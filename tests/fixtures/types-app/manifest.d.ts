@@ -260,7 +260,36 @@ export interface ManifestAuth {
     loginWithOAuth(provider: string, opts?: Record<string, unknown>): Promise<unknown>;
     loginAsGuest(): Promise<unknown>;
     logout(): Promise<unknown>;
+    /** Passkeys of the signed-in user, loaded by `listPasskeys()`. */
+    readonly passkeys: ManifestPasskey[];
+    /** `true` when the browser supports WebAuthn. */
+    readonly passkeySupported: boolean;
+    loginPasskey(): Promise<ManifestPasskeyResult & { user?: Record<string, unknown>; guestEnded?: boolean }>;
+    addPasskey(name?: string): Promise<ManifestPasskeyResult & { passkey?: ManifestPasskey }>;
+    listPasskeys(): Promise<ManifestPasskeyResult & { passkeys?: ManifestPasskey[] }>;
+    renamePasskey(passkey: string | ManifestPasskey, name: string): Promise<ManifestPasskeyResult & { passkey?: ManifestPasskey }>;
+    removePasskey(passkey: string | ManifestPasskey): Promise<ManifestPasskeyResult>;
     [extra: string]: unknown;
+}
+
+/** One passkey on the signed-in account. `accessedAt` is empty until it is used to sign in. */
+export interface ManifestPasskey {
+    $id: string;
+    name: string;
+    $createdAt: string;
+    $updatedAt?: string;
+    accessedAt: string;
+}
+
+export type ManifestPasskeyCode =
+    | 'cancelled' | 'busy' | 'unsupported' | 'not-enabled' | 'not-signed-in' | 'signed-in' | 'guest'
+    | 'reauth-required' | 'limit' | 'exists' | 'invalid' | 'rate-limited' | 'failed';
+
+/** Result of every `$auth` passkey method. `error` is `null` when the prompt was dismissed. */
+export interface ManifestPasskeyResult {
+    success: boolean;
+    error?: string | null;
+    code?: ManifestPasskeyCode;
 }
 
 /** `$locale` from the localization module. */

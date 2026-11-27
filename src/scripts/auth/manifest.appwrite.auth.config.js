@@ -426,6 +426,7 @@ async function getAppwriteConfig() {
         otp: otpEnabled,
         phone: phoneEnabled,
         oauth: oauthEnabled,
+        passkey: authMethods.includes("passkey"),
         teams: teamsEnabled,
         permanentTeams: permanentTeams,
         templateTeams: templateTeams,
