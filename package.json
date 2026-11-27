@@ -74,6 +74,7 @@
         "test:e2e:virtual-heights": "node tests/e2e/virtual-heights.e2e.mjs",
         "test:e2e:virtual-recycle": "node tests/e2e/virtual-recycle.e2e.mjs",
         "test:e2e:virtual-scroll-to": "node tests/e2e/virtual-scroll-to.e2e.mjs",
+        "test:e2e:virtual-prerender": "node tests/e2e/virtual-prerender.e2e.mjs",
         "test:e2e:dropdown-repoint": "node tests/e2e/dropdown-repoint.e2e.mjs",
         "test:e2e:tailwind-dark": "node tests/e2e/tailwind-dark-variant.e2e.mjs",
         "test:e2e:inline-style-variants": "node tests/e2e/utilities-inline-style-variants.e2e.mjs",
