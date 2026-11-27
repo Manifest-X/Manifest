@@ -49,6 +49,7 @@ function loadPasskey({ account = fullAccount(), appwriteConfig = { passkey: true
         error: null,
         passkeys: [],
         passkeySupported: false,
+        _passkeyMigrationTicket: null,
         _syncStateToStorage: vi.fn(),
         _resetTeamsState: vi.fn(),
         _beforeSessionEnd: vi.fn(async () => {}),
@@ -404,6 +405,104 @@ describe('passkey: manage', () => {
         const { store, ctx } = loadPasskey({ store: { ...signedIn, passkeys: [{ $id: 'pk-1' }] } })
         ctx.window.dispatchEvent({ type: 'manifest:auth:session-cleared' })
         expect(store.passkeys).toEqual([])
+    })
+})
+
+describe('passkey: review regressions', () => {
+    const signedIn = { isAuthenticated: true, user: { $id: 'u-1' }, session: { $id: 's', provider: 'magic-url' } }
+    const guestStore = { isAuthenticated: true, isAnonymous: true, user: { $id: 'guest-1' }, session: { $id: 'g-sess', provider: 'anonymous' } }
+
+    it('a second loginPasskey while the prompt is open is code busy and leaves inProgress alone', async () => {
+        let release
+        const credentials = { create: vi.fn(), get: vi.fn(() => new Promise(r => { release = r })) }
+        const { store, account } = loadPasskey({ credentials })
+        const first = store.loginPasskey()
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+        const second = await store.loginPasskey()
+        expect(second).toMatchObject({ success: false, code: 'busy' })
+        expect(store.inProgress).toBe(true)
+        expect(account.createPasskeyToken).toHaveBeenCalledTimes(1)
+        release(fakeCredential({ id: 'cred-1' }))
+        expect((await first).success).toBe(true)
+        expect(store.inProgress).toBe(false)
+        expect((await store.loginPasskey()).code).toBe('signed-in')
+    })
+
+    it('a second addPasskey while the prompt is open is code busy', async () => {
+        let release
+        const credentials = { get: vi.fn(), create: vi.fn(() => new Promise(r => { release = r })) }
+        const { store, account } = loadPasskey({ credentials, store: signedIn })
+        const first = store.addPasskey()
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+        expect(await store.addPasskey()).toMatchObject({ success: false, code: 'busy' })
+        expect(account.createPasskey).toHaveBeenCalledTimes(1)
+        release(fakeCredential({ id: 'cred-1' }))
+        expect((await first).success).toBe(true)
+    })
+
+    it('keeps the guest migration ticket across a failed session exchange and redeems it on retry', async () => {
+        const migrate = vi.fn(async (path) => (path === '/prepare' ? { ok: true, ticket: 't-1' } : { ok: true }))
+        let attempts = 0
+        const account = fullAccount({
+            createSession: vi.fn(async () => {
+                if (++attempts === 1) throw Object.assign(new Error('boom'), { code: 503 })
+                return { $id: 'sess-1', provider: 'passkey' }
+            }),
+        })
+        const { store } = loadPasskey({
+            account,
+            appwriteConfig: { passkey: true, guestMigrationFunctionId: 'fn-1' },
+            store: { ...guestStore, _callGuestMigration: migrate },
+        })
+        expect(await store.loginPasskey()).toMatchObject({ success: false, guestEnded: true })
+        expect((await store.loginPasskey()).success).toBe(true)
+        expect(migrate.mock.calls).toEqual([['/prepare', {}], ['/commit', { ticket: 't-1' }]])
+        expect(store._passkeyMigrationTicket).toBe(null)
+    })
+
+    it('a kept ticket is not redeemed for a different account, and logout drops it', async () => {
+        const migrate = vi.fn(async () => ({ ok: true }))
+        const { store, ctx } = loadPasskey({
+            appwriteConfig: { passkey: true, guestMigrationFunctionId: 'fn-1' },
+            store: { _callGuestMigration: migrate, _passkeyMigrationTicket: { ticket: 't-9', userId: 'someone-else' } },
+        })
+        expect((await store.loginPasskey()).success).toBe(true)
+        expect(migrate).not.toHaveBeenCalled()
+
+        store._passkeyMigrationTicket = { ticket: 't-9', userId: 'u-1' }
+        ctx.window.dispatchEvent({ type: 'manifest:auth:logout' })
+        expect(store._passkeyMigrationTicket).toBe(null)
+    })
+
+    it('a registration that finishes after sign-out does not touch the list or announce', async () => {
+        let release
+        const credentials = { get: vi.fn(), create: vi.fn(() => new Promise(r => { release = r })) }
+        const { store, ctx, events } = loadPasskey({ credentials, store: signedIn })
+        const pending = store.addPasskey()
+        await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+        ctx.window.dispatchEvent({ type: 'manifest:auth:logout' })
+        release(fakeCredential({ id: 'cred-1' }))
+        await pending
+        expect(store.passkeys).toEqual([])
+        expect(events.some(e => e.type === 'manifest:auth:passkey-added')).toBe(false)
+    })
+
+    it('a successful listing clears a stale error', async () => {
+        const { store } = loadPasskey({ store: { ...signedIn, error: 'old' } })
+        await store.listPasskeys()
+        expect(store.error).toBe(null)
+    })
+
+    it('guest session that cannot be ended: sign-in fails, guest stays', async () => {
+        const account = fullAccount({
+            deleteSession: vi.fn(async () => { throw Object.assign(new Error('down'), { code: 503 }) }),
+            createSession: vi.fn(async () => { throw appwriteError('user_session_already_exists', 401) }),
+        })
+        const { store } = loadPasskey({ account, store: guestStore })
+        const result = await store.loginPasskey()
+        expect(result).toMatchObject({ success: false, guestEnded: false })
+        expect(store.isAnonymous).toBe(true)
+        expect(store.user.$id).toBe('guest-1')
     })
 })
 

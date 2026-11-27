@@ -161,6 +161,15 @@ function initializePasskeys() {
             for (const type of ['manifest:auth:login', 'manifest:auth:anonymous', 'manifest:auth:logout', 'manifest:auth:session-cleared']) {
                 window.addEventListener(type, clearPasskeys);
             }
+            // A ticket kept from a failed guest sign-in must not outlive an explicit logout
+            window.addEventListener('manifest:auth:logout', () => {
+                const current = Alpine.store('auth');
+                if (current) current._passkeyMigrationTicket = null;
+            });
+
+            // One browser prompt at a time
+            let busy = false;
+            const busyRefusal = { success: false, error: null, code: 'busy' };
 
             store.loginPasskey = async function () {
                 if (!webauthnSupported()) {
@@ -169,8 +178,20 @@ function initializePasskeys() {
                 if (this.isAuthenticated && !this.isAnonymous) {
                     return refuse(this, 'signed-in', 'Already signed in. Please logout first.');
                 }
-                const { account, appwriteConfig, refusal } = await prepare(this, 'createPasskeyToken');
-                if (refusal) return refusal;
+                if (busy) return { ...busyRefusal };
+                busy = true;
+                let prepared;
+                try {
+                    prepared = await prepare(this, 'createPasskeyToken');
+                } catch (error) {
+                    busy = false;
+                    throw error;
+                }
+                const { account, appwriteConfig, refusal } = prepared;
+                if (refusal) {
+                    busy = false;
+                    return refusal;
+                }
 
                 this.inProgress = true;
                 this.error = null;
@@ -185,11 +206,13 @@ function initializePasskeys() {
                     const token = await account.updatePasskeyToken({ challengeId: challenge.$id, credential: credentialJSON(credential) });
 
                     // The guest session is only given up once the passkey is proven
-                    let migrationTicket = null;
                     if (this.session && this.isAnonymous) {
+                        // Kept on the store, bound to this account, so a retry after a failed exchange redeems it
                         if (appwriteConfig?.guestMigrationFunctionId && this._callGuestMigration) {
                             const prep = await this._callGuestMigration('/prepare', {});
-                            if (prep?.ok && prep.ticket) migrationTicket = prep.ticket;
+                            if (prep?.ok && prep.ticket) {
+                                this._passkeyMigrationTicket = { ticket: prep.ticket, userId: token.userId };
+                            }
                         }
                         // Appwrite refuses createSession while a session is active
                         try {
@@ -202,6 +225,9 @@ function initializePasskeys() {
                         }
                     }
 
+                    const kept = this._passkeyMigrationTicket;
+                    const migrationTicket = kept?.userId === token.userId ? kept.ticket : null;
+
                     const session = await account.createSession(token.userId, token.secret);
                     this.session = session;
                     this.user = await account.get();
@@ -213,6 +239,7 @@ function initializePasskeys() {
                         this._resetTeamsState();
                     }
 
+                    this._passkeyMigrationTicket = null;
                     if (migrationTicket && this._callGuestMigration) {
                         await this._callGuestMigration('/commit', { ticket: migrationTicket });
                     }
@@ -257,6 +284,7 @@ function initializePasskeys() {
 
                     return { success: false, ...described, guestEnded };
                 } finally {
+                    busy = false;
                     this.inProgress = false;
                 }
             };
@@ -267,8 +295,20 @@ function initializePasskeys() {
                 }
                 const blocked = signedInRefusal(this);
                 if (blocked) return blocked;
-                const { account, refusal } = await prepare(this, 'createPasskey');
-                if (refusal) return refusal;
+                if (busy) return { ...busyRefusal };
+                busy = true;
+                let prepared;
+                try {
+                    prepared = await prepare(this, 'createPasskey');
+                } catch (error) {
+                    busy = false;
+                    throw error;
+                }
+                const { account, refusal } = prepared;
+                if (refusal) {
+                    busy = false;
+                    return refusal;
+                }
 
                 // The id is always Appwrite's to choose
                 const params = {};
@@ -277,6 +317,7 @@ function initializePasskeys() {
 
                 this.inProgress = true;
                 this.error = null;
+                const epoch = identityEpoch;
 
                 try {
                     const challenge = await account.createPasskey(params);
@@ -289,11 +330,13 @@ function initializePasskeys() {
                         credential: credentialJSON(credential)
                     });
 
-                    this.passkeys = [...(this.passkeys || []).filter(p => p.$id !== passkey.$id), passkey];
-
-                    window.dispatchEvent(new CustomEvent('manifest:auth:passkey-added', {
-                        detail: { passkey }
-                    }));
+                    // Registered for the account that asked; that account may no longer be the one shown
+                    if (epoch === identityEpoch) {
+                        this.passkeys = [...(this.passkeys || []).filter(p => p.$id !== passkey.$id), passkey];
+                        window.dispatchEvent(new CustomEvent('manifest:auth:passkey-added', {
+                            detail: { passkey }
+                        }));
+                    }
 
                     return { success: true, passkey };
                 } catch (error) {
@@ -301,6 +344,7 @@ function initializePasskeys() {
                     this.error = described.error;
                     return { success: false, ...described };
                 } finally {
+                    busy = false;
                     this.inProgress = false;
                 }
             };
@@ -318,6 +362,7 @@ function initializePasskeys() {
                         return { success: false, error: null, code: 'cancelled' };
                     }
                     this.passkeys = response?.passkeys || [];
+                    this.error = null;
                     return { success: true, passkeys: this.passkeys };
                 } catch (error) {
                     const described = describe(error);

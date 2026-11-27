@@ -195,6 +195,7 @@ function initializeAuthStore() {
         _otpMigrationTicket: null, // OTP: { ticket, userId } guest-migration ticket, kept across failed verify attempts
         passkeys: [], // Passkeys of the signed-in user, loaded by listPasskeys()
         passkeySupported: false, // Browser has WebAuthn
+        _passkeyMigrationTicket: null, // Passkey: { ticket, userId } guest-migration ticket, kept across a failed session exchange
         teams: [], // List of user's teams
         currentTeam: null, // Currently selected/active team
         startTeamId: null, // App-chosen team to start on when the teams first load (used if the user has it)
