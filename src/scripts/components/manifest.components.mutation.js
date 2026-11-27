@@ -20,8 +20,8 @@ window.ManifestComponentsMutation = {
         const processor = window.ManifestComponentsProcessor;
         const gate = window.ManifestComponentsRouting;
         if (!processor) return;
-        // Initial scan
-        this.processAllPlaceholders();
+        // Initial scan: swapping's boot pass covers it when present
+        if (!window.ManifestComponentsSwapping) this.processAllPlaceholders();
         const isPlaceholder = el => el.tagName.toLowerCase().startsWith('x-') &&
             !el.hasAttribute('data-pre-rendered') && !el.hasAttribute('data-processed');
         // Mutation observer for new placeholders

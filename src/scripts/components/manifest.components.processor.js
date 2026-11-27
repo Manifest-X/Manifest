@@ -61,6 +61,19 @@ function repointTemplateClone(owner, placeholder, node) {
     }
 }
 
+// Markup parsed once per component source; each instance works on a clone
+const parsedComponents = new Map();
+function componentContainer(name, content) {
+    let entry = parsedComponents.get(name);
+    if (!entry || entry.content !== content) {
+        const container = document.createElement('div');
+        container.innerHTML = content.trim();
+        entry = { content, container };
+        parsedComponents.set(name, entry);
+    }
+    return entry.container.cloneNode(true);
+}
+
 window.ManifestComponentsProcessor = {
     async processComponent(element, instanceId) {
         const name = element.tagName.toLowerCase().replace('x-', '');
@@ -92,8 +105,7 @@ window.ManifestComponentsProcessor = {
             element.replaceWith(document.createComment(` Failed to load component: ${name} `));
             return;
         }
-        const container = document.createElement('div');
-        container.innerHTML = content.trim();
+        const container = componentContainer(name, content);
         let topLevelElements = Array.from(container.children);
         if (topLevelElements.length === 0) {
             console.debug('[Manifest Components] skipped: empty component template', element);
