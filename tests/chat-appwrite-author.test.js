@@ -79,4 +79,15 @@ describe('appwrite chat adapter author fields', () => {
         expect(messages[0].author.id).toBe('42')
         expect(messages[0].author.displayName).toBe('Guest')
     })
+    it('does not throw on an object author id', async () => {
+        rows = [row({ authorId: JSON.parse('{"toString":"x"}'), authorName: 'A' })]
+        const { messages } = await adapter().load('c1')
+        expect(messages[0].author.id).toBe('')
+    })
+
+    it('caps names without splitting a surrogate pair', async () => {
+        rows = [row({ authorId: 'u3', authorName: 'A'.repeat(79) + '\u{1F600}x' })]
+        const { messages } = await adapter().load('c1')
+        expect(messages[0].author.displayName).toBe('A'.repeat(79) + '\u{1F600}')
+    })
 })

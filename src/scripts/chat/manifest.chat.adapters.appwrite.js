@@ -30,7 +30,7 @@
         }
 
         function nameOf(v) {
-            const s = typeof v === 'string' ? v.trim().slice(0, 80) : '';
+            const s = typeof v === 'string' ? Array.from(v.trim()).slice(0, 80).join('') : '';
             return s && !/^[^\s@]+@[^\s@]+$/.test(s) ? s : 'Guest';
         }
 
@@ -63,7 +63,7 @@
             }
 
             function toMsg(row) {
-                const aid = row.authorId == null ? '' : String(row.authorId);
+                const aid = typeof row.authorId === 'string' || typeof row.authorId === 'number' ? String(row.authorId) : '';
                 return {
                     id: row.$id, conversationId: row.conversationId,
                     author: { id: aid, kind: 'human', displayName: nameOf(row.authorName), color: hashColor(aid) },
