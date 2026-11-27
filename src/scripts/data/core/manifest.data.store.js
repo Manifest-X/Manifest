@@ -1377,6 +1377,8 @@ function checkAndDispatchRenderReady(sources) {
 
 // Latest locale change owns _localeChanging; an older one finishing must not clear it
 let localeChangeSeq = 0;
+// Source → locale change that reloaded it: loads begun before it never land
+const localeReloads = new Map();
 
 // Listen for locale changes to reload data
 function setupLocaleChangeListener() {
@@ -1449,6 +1451,7 @@ function setupLocaleChangeListener() {
 
             // Wait for all CSV checks to complete before proceeding
             await Promise.all(csvChecks);
+            localizedDataSources.forEach(name => localeReloads.set(name, seq));
 
             // Only clear cache for localized data sources
             localizedDataSources.forEach(dataSourceName => {
@@ -1680,6 +1683,8 @@ function isUploadingFile(dataSourceName, entryId, fileId = null) {
 
 // Export functions to window for use by other subscripts
 window.ManifestDataStore = {
+    localeChangeCount: () => localeChangeSeq,
+    reloadedForLocaleSince: (dataSourceName, since) => (localeReloads.get(dataSourceName) || 0) > since,
     dataSourceCache,
     loadingPromises,
     rawDataStore,

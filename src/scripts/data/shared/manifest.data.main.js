@@ -1198,6 +1198,7 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
     const settled = () => window.ManifestDataStore.endRead?.(dataSourceName, readToken);
     const run = runDeduped(cacheKey, async () => {
         let landed = false;
+        const localeSeqAtStart = window.ManifestDataStore.localeChangeCount?.() ?? 0;
         try {
             const manifest = await window.ManifestDataConfig.ensureManifest();
             if (!manifest) {
@@ -1526,7 +1527,8 @@ async function loadDataSource(dataSourceName, locale = 'en', options = {}) {
                 && (dataSource.locales || dataSource[locale]));
             const liveLocale = (window.Alpine && Alpine.store('locale')?.current)
                 || document.documentElement.lang || locale;
-            const staleLocale = localeSensitive && liveLocale !== locale;
+            const staleLocale = (localeSensitive && liveLocale !== locale)
+                || !!window.ManifestDataStore.reloadedForLocaleSince?.(dataSourceName, localeSeqAtStart);
 
             // Network landing (coalesced per frame, merges by $id); resolves once visible
             if (!isInitializing && !staleLocale) {
@@ -1850,12 +1852,10 @@ async function initializeDataSourcesPlugin() {
                     await Promise.all(
                         preloadNames.map(async (name) => {
                             try {
+                                const since = window.ManifestDataStore.localeChangeCount?.() ?? 0;
                                 const data = await loadDataSource(name, locale);
-                                // Locale switched mid-load: the locale listener already reloaded this source
-                                const source = manifest.data[name];
-                                const localeSensitive = !!(source && typeof source === 'object' && (source.locales || source[locale]));
-                                const liveLocale = Alpine.store('locale')?.current || document.documentElement.lang || locale;
-                                if (localeSensitive && liveLocale !== locale) return;
+                                // A locale change reloaded this source mid-load: its result stands
+                                if (window.ManifestDataStore.reloadedForLocaleSince?.(name, since)) return;
                                 if (data != null) {
                                     // Boot landing: every pre-loaded source lands in ONE flush
                                     await landRows(name, data, { mode: 'replace', loading: false, error: null, ready: true, fresh: true, allowDuringInit: true });
