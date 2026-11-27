@@ -74,10 +74,10 @@ function addLate() {
 }
 const LATE_CARD = '<div id="late" class="tracking-widest">component</div>'
 
-function headFor({ loader, stamp, sheetHref = '/manifest.utilities.css?v=1', sheet = true, legacyComplete = false, author = '', alpine = true, async = false }) {
+function headFor({ loader, stamp, sheetHref = '/manifest.utilities.css?v=1', sheet = true, legacyComplete = false, author = '', alpine = true, async = false, pre = '' }) {
     const link = !sheet ? '' : `<link rel="stylesheet" href="${sheetHref}" data-mnfst-utilities${legacyComplete ? ' data-mnfst-utilities-complete' : ''}${stamp ? ' ' + stamp.linkAttributes : ''}>${stamp ? stamp.tokensHtml : ''}`
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>s</title>
-<link rel="manifest" href="/manifest.json">
+<link rel="manifest" href="/manifest.json">${pre}
 <link rel="stylesheet" href="/fw/manifest.css">${link}${author}
 <script${async ? ' async' : ''} src="/fw/${loader}" data-plugin-base="/fw" data-cdn="/cdn"${alpine ? ' data-alpine="/alpine.js"' : ''} data-tailwind></script>
 </head>`
@@ -120,12 +120,12 @@ async function buildPages(loader) {
         pages[`/late-${name}-ref`] = page({ loader, sheet: false }, body)
         await stamped(`/shadow-late-${name}`, { loader }, body, { mode: 'shadow' })
     }
-    // Async loader, stylesheet slow to arrive
+    // Async loader, stylesheet slow to arrive (the timing script sits before the sheets: an inline script after one waits for it)
     const timing = '<script>document.addEventListener("alpine:init", () => { window.__alpineAt = performance.now() })</script>'
-    await stamped('/async-slow', { loader, async: true, author: timing, sheetHref: '/slow/stamped.css' })
+    await stamped('/async-slow', { loader, async: true, pre: timing, sheetHref: '/slow/stamped.css' })
     pages['/slow/stamped.css'] = pages['/u/async-slow.css']
     pages['/slow/ref.css'] = pages['/u/async-slow.css']
-    pages['/async-slow-ref'] = page({ loader, async: true, author: timing, sheetHref: '/slow/ref.css' })
+    pages['/async-slow-ref'] = page({ loader, async: true, pre: timing, sheetHref: '/slow/ref.css' })
     // Parity: tokens recorded on a page vs the node scan of its HTML
     const parityBody = `<div class="[&>*]:p-2 [&amp;_p]:mt-2 content-['>'] data-[x=a&gt;b]:flex" x-transition:enter="opacity-0 scale-90"></div>
 <div :class="{ 'ring-2 ring-blue-500': true, hidden: false }"></div><span class='size-6 !font-bold'></span>`
