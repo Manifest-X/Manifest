@@ -297,12 +297,16 @@ export function utilitiesStamp(result, { mode = 'shadow', sources = [] } = {}) {
 
 export { tailwindSeed, TAILWIND_ENGINE_INPUT, TAILWIND_ENGINE_HASH };
 
+// Markdown containers (`::: frame col gap-4 icon="…" "name"`): the markdown module writes these classes on an <aside>
+const MARKDOWN_CONTAINER_RE = /^:::[ \t]*([^\n]*)$/gm;
+
 // `class:token=` per-class conditional bindings; extractClassesFromHTML covers `:class`
 const CLASS_TOKEN_BINDING_RE = /\bclass:([a-zA-Z0-9_-]+(?:\\.[a-zA-Z0-9_-]+)*)\s*=/g;
 
 /**
  * Scan HTML for utility class tokens using the same extraction the browser
- * plugin uses (extractClassesFromHTML, which reads `:class` literals), plus `class:` tokens.
+ * plugin uses (extractClassesFromHTML, which reads `:class` literals), plus `class:` tokens
+ * and markdown container classes (`::: frame col gap-4`).
  * Skips `x-`/`$` tokens. Returns a sorted, deduplicated array.
  *
  * `safelist` (manifest.json's `utilities.safelist`) is folded into the result
@@ -323,6 +327,13 @@ export function scanClasses(html, { safelist = [] } = {}) {
     while ((m = CLASS_TOKEN_BINDING_RE.exec(html)) !== null) {
         const cls = m[1].replace(/\\(.)/g, '$1');
         if (cls && !cls.startsWith('x-') && !cls.startsWith('$')) set.add(cls);
+    }
+
+    MARKDOWN_CONTAINER_RE.lastIndex = 0;
+    while ((m = MARKDOWN_CONTAINER_RE.exec(html)) !== null) {
+        const tokens = m[1].replace(/\s*icon="[^"]+"\s*/, ' ').replace(/\s*"[^"]+"\s*/, ' ').split(/\s+/).filter(Boolean);
+        const frame = tokens.includes('frame');
+        for (const cls of tokens) if (!cls.startsWith('x-') && !cls.startsWith('$') && !(frame && cls === 'demo')) set.add(cls);
     }
 
     return Array.from(set).sort();
