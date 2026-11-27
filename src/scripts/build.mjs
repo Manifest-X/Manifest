@@ -767,7 +767,8 @@ function buildUtilitiesNodeModule() {
         }
     }
 
-    const wrapper = fs.readFileSync(wrapperPath, 'utf8');
+    const wrapper = fs.readFileSync(wrapperPath, 'utf8').replace("const TAILWIND_ENGINE_HASH = '';", `const TAILWIND_ENGINE_HASH = '${TAILWIND_ENGINE_HASH}';`);
+    if (!wrapper.includes(`TAILWIND_ENGINE_HASH = '${TAILWIND_ENGINE_HASH}'`)) throw new Error('node module engine hash marker not found');
     const header = '/* manifest.utilities.node.mjs — built from scripts/utilities/ (DOM-free) */\n\n';
     const combined = `${header}${DOM_SHIMS}\n${core.join('\n\n')}\n\n${wrapper}`;
 
@@ -964,8 +965,9 @@ function vendorHashes() {
 // Engine version, from the bundled engine's file name: part of the Tailwind output cache fingerprint
 const TAILWIND_ENGINE_VERSION = (CONFIG.dependencies.TAILWIND_V4_FILE.match(/v(\d+\.\d+\.\d+)/) || [])[1];
 if (!TAILWIND_ENGINE_VERSION) throw new Error('Tailwind engine version not found in TAILWIND_V4_FILE');
-// Engine-skip seed the loader accepts: same function the node bake stamps with
-const TAILWIND_SEED = tailwindSeed(TAILWIND_ENGINE_VERSION);
+// Engine-skip seed: engine version, its input and the bundled engine file (with Manifest's patches); the node bake carries the same hash
+const TAILWIND_ENGINE_HASH = createHash('sha256').update(fs.readFileSync(path.join('scripts', CONFIG.dependencies.TAILWIND_V4_FILE))).digest('hex').slice(0, 16);
+const TAILWIND_SEED = tailwindSeed(TAILWIND_ENGINE_VERSION, undefined, TAILWIND_ENGINE_HASH);
 
 // manifest.modules.integrity.json: what the loader injects; its hash and the version are stamped
 // into the loader. manifest.integrity.json: every browser file, loader included.

@@ -6,6 +6,7 @@
  * STAMP_LIB=<dir> runs it against another lib/ build.
  */
 import { createRequire } from 'module'
+import { createHash } from 'crypto'
 import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
@@ -18,7 +19,11 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), '..')
 const LIB = process.env.STAMP_LIB || join(repo, 'lib')
 const require = createRequire(import.meta.url)
 const node = await import(pathToFileURL(join(LIB, 'manifest.utilities.node.mjs')).href)
-const ENGINE = readFileSync(join(repo, 'src/scripts/build.mjs'), 'utf8').match(/TAILWIND_V4_FILE: 'tailwind\.v(\d+\.\d+\.\d+)\.js'/)[1]
+const ENGINE_FILE = readFileSync(join(repo, 'src/scripts/build.mjs'), 'utf8').match(/TAILWIND_V4_FILE: '(tailwind\.v(\d+\.\d+\.\d+)\.js)'/)
+const ENGINE = ENGINE_FILE[2]
+const HASH = createHash('sha256').update(readFileSync(join(repo, 'src/scripts', ENGINE_FILE[1]))).digest('hex').slice(0, 16)
+const NODE_VERSION = require('tailwindcss/package.json').version
+const seedOf = (v) => tailwindSeed(v, TAILWIND_ENGINE_INPUT, HASH)
 const injected = (version) => ({
     engine: tailwindcss,
     themeCss: readFileSync(require.resolve('tailwindcss/theme.css'), 'utf8'),
@@ -27,31 +32,43 @@ const injected = (version) => ({
 })
 
 describe('tailwindSeed', () => {
-    it('is "<version>:<hash of the input>" and deterministic', () => {
-        expect(tailwindSeed('4.3.1')).toMatch(/^4\.3\.1:[0-9a-z]+$/)
-        expect(tailwindSeed('4.3.1')).toBe(tailwindSeed('4.3.1', TAILWIND_ENGINE_INPUT))
-        expect(tailwindSeed('4.3.3')).not.toBe(tailwindSeed('4.3.1'))
-        expect(tailwindSeed('4.3.1', TAILWIND_ENGINE_INPUT + ' ')).not.toBe(tailwindSeed('4.3.1'))
-        expect(tailwindSeed('')).toBe(null)
-        expect(tailwindSeed(null)).toBe(null)
+    it('is "<version>:<hash of the input and the engine file>" and deterministic', () => {
+        expect(seedOf('4.3.1')).toMatch(/^4\.3\.1:[0-9a-z]+$/)
+        expect(seedOf('4.3.1')).toBe(tailwindSeed('4.3.1', TAILWIND_ENGINE_INPUT, HASH))
+        expect(seedOf('4.3.3')).not.toBe(seedOf('4.3.1'))
+        expect(tailwindSeed('4.3.1', TAILWIND_ENGINE_INPUT + ' ', HASH)).not.toBe(seedOf('4.3.1'))
+        expect(tailwindSeed('4.3.1', TAILWIND_ENGINE_INPUT, HASH.replace(/^./, (c) => c === '0' ? '1' : '0'))).not.toBe(seedOf('4.3.1'))
+        expect(tailwindSeed('4.3.1')).toBe(null)
+        expect(tailwindSeed('', TAILWIND_ENGINE_INPUT, HASH)).toBe(null)
+        expect(tailwindSeed(null, TAILWIND_ENGINE_INPUT, HASH)).toBe(null)
     })
 
     it('the input carries every Manifest variant', () => {
         for (const v of [...TAILWIND_CUSTOM_VARIANTS, TAILWIND_DARK_VARIANT]) expect(TAILWIND_ENGINE_INPUT).toContain(v)
     })
 
+    it('the node module carries the bundled engine file\'s hash', () => {
+        expect(node.TAILWIND_ENGINE_HASH).toBe(HASH)
+    })
+
     it('the built loader and its min build accept exactly the bundled engine\'s seed', () => {
-        const seed = tailwindSeed(ENGINE)
+        const seed = seedOf(ENGINE)
         for (const f of ['manifest.js', 'manifest.min.js']) expect(readFileSync(join(LIB, f), 'utf8'), f).toMatch(new RegExp(`['"]${seed.replace(/\./g, '\\.')}['"]`))
         expect(readFileSync(join(LIB, 'manifest.js'), 'utf8')).toContain(`const TAILWIND_SEED = '${seed}';`)
         expect(readFileSync(join(repo, 'src/scripts/manifest.js'), 'utf8')).toContain("const TAILWIND_SEED = '';")
+    })
+
+    it('the node bake\'s tailwindcss is the bundled browser engine\'s version', () => {
+        expect(NODE_VERSION).toBe(ENGINE)
+        expect(JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')).dependencies.tailwindcss).toBe(ENGINE)
+        expect(readFileSync(join(repo, 'src/scripts', ENGINE_FILE[1]), 'utf8').slice(0, 200)).toContain(`v${ENGINE}`)
     })
 })
 
 describe('bakeUtilities report seed', () => {
     it('is the seed of the version and input that ran', async () => {
-        const { tailwind } = await node.bakeUtilities({ classes: ['p-4'], tailwind: injected('4.3.1') })
-        expect(tailwind.seed).toBe(tailwindSeed('4.3.1', tailwind.input))
+        const { tailwind } = await node.bakeUtilities({ classes: ['p-4'], tailwind: injected(NODE_VERSION) })
+        expect(tailwind.seed).toBe(tailwindSeed(NODE_VERSION, tailwind.input, HASH))
         expect(tailwind.input).toBe(TAILWIND_ENGINE_INPUT)
     })
 
@@ -64,7 +81,7 @@ describe('bakeUtilities report seed', () => {
 
 describe('bake without the engine at runtime', () => {
     it('ships the @property initial values utilities compose with, and the fallback below utilities', async () => {
-        const { css } = await node.bakeUtilities({ classes: ['shadow-md', 'skew-x-12', 'ring-2'], tailwind: injected('4.3.1') })
+        const { css } = await node.bakeUtilities({ classes: ['shadow-md', 'skew-x-12', 'ring-2'], tailwind: injected(NODE_VERSION) })
         for (const p of ['--tw-shadow', '--tw-inset-shadow', '--tw-ring-offset-shadow', '--tw-skew-x']) expect(css).toMatch(new RegExp(`@property ${p} \\{`))
         expect(css).toContain('initial-value: 0 0 #0000;')
         expect(css).not.toContain('@layer properties')
@@ -72,19 +89,19 @@ describe('bake without the engine at runtime', () => {
     })
 
     it('adds nothing for classes that need no properties', async () => {
-        const { css } = await node.bakeUtilities({ classes: ['flex'], tailwind: injected('4.3.1') })
+        const { css } = await node.bakeUtilities({ classes: ['flex'], tailwind: injected(NODE_VERSION) })
         expect(css).not.toContain('@property')
         expect(css).not.toContain('@supports')
     })
 })
 
 describe('utilitiesStamp', () => {
-    const bake = (classes = ['flex', 'p-4', 'card'], version = '4.3.1') => node.bakeUtilities({ classes, tailwind: injected(version) })
+    const bake = (classes = ['flex', 'p-4', 'card'], version = NODE_VERSION) => node.bakeUtilities({ classes, tailwind: injected(version) })
 
     it('gives the link attributes and the tokens element', async () => {
         const result = await bake()
         const stamp = node.utilitiesStamp(result)
-        expect(stamp.seed).toBe(tailwindSeed('4.3.1'))
+        expect(stamp.seed).toBe(seedOf(ENGINE))
         expect(stamp.mode).toBe('shadow')
         expect(stamp.tokens).toEqual(['card', 'flex', 'p-4'])
         expect(stamp.attributes).toEqual({ 'data-tailwind-stamp': stamp.seed, 'data-tailwind-mode': 'shadow' })
@@ -94,7 +111,7 @@ describe('utilitiesStamp', () => {
     })
 
     it('includes safelisted tokens (everything Tailwind was shown)', async () => {
-        const result = await node.bakeUtilities({ classes: ['p-4'], safelist: ['gap-2'], tailwind: injected('4.3.1') })
+        const result = await node.bakeUtilities({ classes: ['p-4'], safelist: ['gap-2'], tailwind: injected(NODE_VERSION) })
         expect(node.utilitiesStamp(result).tokens).toEqual(['gap-2', 'p-4'])
     })
 
@@ -122,7 +139,7 @@ describe('utilitiesStamp', () => {
     })
 
     it('a 4.3.3 bake does not carry the loader\'s seed', async () => {
-        expect(node.utilitiesStamp(await bake(undefined, '4.3.3')).seed).not.toBe(tailwindSeed(ENGINE))
+        expect(node.utilitiesStamp(await bake(undefined, '4.3.3')).seed).not.toBe(seedOf(ENGINE))
     })
 })
 

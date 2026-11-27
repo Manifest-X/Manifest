@@ -133,6 +133,8 @@ function loadTailwindEngine(injected) {
  * browser engine tracks its own "already seen" set (see the header comment)
  * before calling build(). */
 const TAILWIND_BAKE_INPUT = TAILWIND_ENGINE_INPUT;
+// sha256 prefix of the browser engine this mnfst version bundles (lib/manifest.tailwind.js); stamped by build.mjs
+const TAILWIND_ENGINE_HASH = '';
 
 // Pass report: { ran, emitted, reason: null | 'no-classes' | 'unavailable' | 'error', version, seed, input, candidates }
 async function compileTailwindPass(classes, injected) {
@@ -141,7 +143,7 @@ async function compileTailwindPass(classes, injected) {
         if (reason) report.reason = reason;
         else {
             report.ran = true;
-            report.seed = tailwindSeed(report.version, report.input);
+            report.seed = tailwindSeed(report.version, report.input, TAILWIND_ENGINE_HASH);
         }
         report.emitted = !!css;
         return { css, report };
@@ -230,7 +232,7 @@ export async function compileUtilities(options = {}) {
  * compileUtilities plus a report of the Tailwind pass.
  * `tailwind.ran`: the engine compiled `candidates`; `emitted`: it produced utility rules;
  * `reason` when it did not run; `version`: engine package version (injected engines: their `version`, else null);
- * `seed`: tailwindSeed(version, input) when the pass ran with a known version, else null;
+ * `seed`: tailwindSeed(version, input, TAILWIND_ENGINE_HASH) when the pass ran with a known version, else null;
  * `input`: the engine's entry CSS; `candidates`: sorted tokens shown to the engine. Stamp it with utilitiesStamp.
  *
  * @param {Parameters<typeof compileUtilities>[0]} options
@@ -277,7 +279,7 @@ const AUTHOR_TAILWIND_BLOCK_RE = /<style\b[^>]*\btype\s*=\s*["']?text\/tailwindc
 export function utilitiesStamp(result, { mode = 'shadow', sources = [] } = {}) {
     if (mode !== 'shadow' && mode !== 'skip') throw new TypeError(`utilitiesStamp: mode must be "shadow" or "skip", got ${JSON.stringify(mode)}`);
     const report = result && result.tailwind;
-    if (!report || !report.ran || !report.seed || report.seed !== tailwindSeed(report.version, report.input)) return null;
+    if (!report || !report.ran || !report.seed || report.seed !== tailwindSeed(report.version, report.input, TAILWIND_ENGINE_HASH)) return null;
     if (sources.some(html => typeof html === 'string' && AUTHOR_TAILWIND_BLOCK_RE.test(html))) return null;
     const seed = report.seed;
     const tokens = report.candidates.slice();
@@ -293,7 +295,7 @@ export function utilitiesStamp(result, { mode = 'shadow', sources = [] } = {}) {
     };
 }
 
-export { tailwindSeed, TAILWIND_ENGINE_INPUT };
+export { tailwindSeed, TAILWIND_ENGINE_INPUT, TAILWIND_ENGINE_HASH };
 
 // `class:token=` per-class conditional bindings; extractClassesFromHTML covers `:class`
 const CLASS_TOKEN_BINDING_RE = /\bclass:([a-zA-Z0-9_-]+(?:\\.[a-zA-Z0-9_-]+)*)\s*=/g;
