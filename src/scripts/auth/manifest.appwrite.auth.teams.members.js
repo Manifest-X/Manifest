@@ -438,6 +438,11 @@ function initializeTeamsMembers() {
                     return { success: false, error: 'You must be signed in to accept an invitation' };
                 }
 
+                if (userId && userId !== this.user?.$id) {
+                    this.error = 'This invite is for a different account.';
+                    return { success: false, error: this.error };
+                }
+
                 this.inProgress = true;
                 this.error = null;
 
