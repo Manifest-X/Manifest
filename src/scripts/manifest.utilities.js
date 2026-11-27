@@ -25,11 +25,12 @@ const AUTHOR_DARK_RE = /@custom-variant\s+dark[\s({]/;
 // Engine entry CSS for a page with no author text/tailwindcss blocks (the bake's input; the browser engine's equivalent)
 const TAILWIND_ENGINE_INPUT = `@layer theme, base, components, utilities;\n@import "tailwindcss/theme" layer(theme);\n@import "tailwindcss/utilities" layer(utilities);\n${[...TAILWIND_CUSTOM_VARIANTS, TAILWIND_DARK_VARIANT].join('\n')}\n`;
 
-// Seed: "<engine version>:<FNV-1a of the input, base 36>"
-function tailwindSeed(version, input = TAILWIND_ENGINE_INPUT) {
-    if (typeof version !== 'string' || !version || typeof input !== 'string') return null;
+// Seed: "<engine version>:<FNV-1a of the input and the bundled engine file's hash, base 36>"
+function tailwindSeed(version, input = TAILWIND_ENGINE_INPUT, engineHash = '') {
+    if (typeof version !== 'string' || !version || typeof input !== 'string' || typeof engineHash !== 'string' || !engineHash) return null;
+    const text = `${input}\u0000${engineHash}`;
     let h = 0x811c9dc5;
-    for (let i = 0; i < input.length; i++) h = Math.imul(h ^ input.charCodeAt(i), 0x01000193);
+    for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
     return `${version}:${(h >>> 0).toString(36)}`;
 }
 
@@ -4261,9 +4262,45 @@ TailwindCompiler.prototype.stripCoveredRulesFromCss = function (cssText) {
 
 // Engine-skip gate (loader: decideTailwindStamp). Armed once the loader accepts the stamp and the sheet is read;
 // after that each token is checked where it is first recorded. utilities.patterns never excuse a token here.
-const FRAMEWORK_STATE_CLASSES = new Set(['dark', 'light', 'active', 'outside', 'copied', 'window-resizing', 'toast-entry', 'toast-exit',
-    'time-options', 'range-start', 'range-end', 'in-range', 'date-picker', 'chart']);
+// Stamped by build.mjs from the bundled engine's design system: its bare utilities (flex, hidden, …), the first
+// segment of every utility it has (bg, inset, pointer, …), and the framework classes under those that it emits no rule for
+const TAILWIND_BARE_UTILITIES = new Set(["@container","absolute","antialiased","block","blur","border","capitalize","collapse","container","contents","fixed","flex","grayscale","grid","grow","hidden","inline","invert","invisible","isolate","italic","lowercase","ordinal","outline","overline","relative","resize","ring","rounded","sepia","shadow","shrink","static","sticky","table","transform","transition","truncate","underline","uppercase","visible"]);
+const TAILWIND_UTILITY_ROOTS = new Set(["@container","absolute","accent","align","animate","antialiased","appearance","aspect","auto","backdrop","backface","basis","bg","block","blur","border","bottom","box","break","brightness","capitalize","caption","caret","clear","col","collapse","columns","contain","container","content","contents","contrast","cursor","decoration","delay","diagonal","divide","drop","duration","ease","end","field","fill","filter","fixed","flex","float","flow","font","forced","from","gap","grayscale","grid","grow","h","hidden","hue","hyphens","indent","inline","inset","invert","invisible","isolate","isolation","italic","items","justify","leading","left","line","lining","list","lowercase","m","mask","max","mb","mbe","mbs","me","min","mix","ml","mr","ms","mt","mx","my","no","normal","not","object","oldstyle","opacity","order","ordinal","origin","outline","overflow","overline","overscroll","p","pb","pbe","pbs","pe","perspective","pl","place","placeholder","pointer","pr","proportional","ps","pt","px","py","relative","resize","right","ring","rotate","rounded","row","saturate","scale","scheme","scroll","scrollbar","select","self","sepia","shadow","shrink","size","skew","slashed","snap","space","sr","stacked","start","static","sticky","stroke","subpixel","tab","table","tabular","text","to","top","touch","tracking","transform","transition","translate","truncate","underline","uppercase","via","visible","w","whitespace","will","wrap","z","zoom"]);
+const FRAMEWORK_CLASSES = new Set(["bottom-end","bottom-end-corner","bottom-start","bottom-start-corner","col-wrap","cursor-only","end-bottom","end-bottom-corner","end-top","end-top-corner","field-copied-icon","grid-footer","grid-header","grid-row","grid-table","no-android","no-apple","no-callout","no-focus","no-ios","no-linux","no-mac","no-overscroll","no-overscroll-y","no-scrollbar","no-select","no-spinner","no-tap-zoom","no-windows","p-safe","pb-safe","pl-safe","pointer-only","pr-safe","pt-safe","px-safe","py-safe","row-wrap","start-bottom","start-bottom-corner","start-top","start-top-corner","top-end","top-end-corner","top-start","top-start-corner","touch-only"]);
 const AUTHOR_TAILWIND_SELECTOR = 'style[type="text/tailwindcss"]:not(#manifest-tailwind-variants)';
+
+// Whether the engine could read this token as a candidate: groups balanced, no markup or code outside them, no dangling dash
+function engineCandidate(cls) {
+    let depth = 0, outside = '';
+    for (const ch of cls) {
+        if (ch === '[' || ch === '(') depth++;
+        else if (ch === ']' || ch === ')') { if (--depth < 0) return false; }
+        else if (!depth) outside += ch;
+    }
+    return depth === 0 && !/[='"`<>{};,\\$]/.test(outside) && !cls.endsWith('-');
+}
+
+// The utility after the last variant, without important or negative marks
+function utilityPart(cls) {
+    let depth = 0, start = 0;
+    for (let i = 0; i < cls.length; i++) {
+        const ch = cls[i];
+        if (ch === '[' || ch === '(') depth++;
+        else if (ch === ']' || ch === ')') depth--;
+        else if (ch === ':' && !depth) start = i + 1;
+    }
+    return cls.slice(start).replace(/^!/, '').replace(/!$/, '').replace(/^-/, '');
+}
+
+// A token only the engine could style: an arbitrary value or property, a bare utility it has, or a name under one of its utilities
+function needsEngine(cls) {
+    if (!engineCandidate(cls)) return false;
+    if (!/[-:[\/!.(]/.test(cls)) return TAILWIND_BARE_UTILITIES.has(cls);
+    const base = utilityPart(cls);
+    if (/^[[(]/.test(base)) return true;
+    if (!TAILWIND_UTILITY_ROOTS.has(base.split(/[-/[(]/)[0])) return false;
+    return !FRAMEWORK_CLASSES.has(cls);
+}
 
 TailwindCompiler.prototype.armEngineGate = function () {
     const stamp = window.__tailwindStamp;
@@ -4283,8 +4320,8 @@ TailwindCompiler.prototype.armEngineGate = function () {
 TailwindCompiler.prototype.checkEngineToken = function (cls) {
     const gate = this._engineGate;
     if (!gate || gate.trigger) return true;
-    if (gate.tokens.has(cls) || this.staticUtilitiesCoveredClasses.has(cls) || FRAMEWORK_STATE_CLASSES.has(cls)) return true;
-    if (cls.startsWith('x-') || cls.startsWith('$') || this.ignoredClassPatterns.some(p => p.test(cls))) return true;
+    if (gate.tokens.has(cls) || this.staticUtilitiesCoveredClasses.has(cls) || !needsEngine(cls)) return true;
+    if (cls.startsWith('x-') || this.ignoredClassPatterns.some(p => p.test(cls))) return true;
     this.engineNeeded(cls, 'token');
     return false;
 };

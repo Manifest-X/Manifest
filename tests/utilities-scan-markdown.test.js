@@ -13,10 +13,10 @@ describe('scanClasses: markdown containers', () => {
     })
 
     it('keeps important, arbitrary and variant tokens', () => {
-        expect(scanClasses('::: frame !gap-6 [&_a]:underline md:h-112\nx\n:::')).toEqual(['!gap-6', 'frame', 'md:h-112', '[&_a]:underline'])
+        expect(scanClasses('::: frame !gap-6 [&_a]:underline md:h-112\nx\n:::')).toEqual(['!gap-6', '[&_a]:underline', 'frame', 'md:h-112'])
     })
 
-    it('drops the icon, the quoted name and a frame\\'s demo flag, as the renderer does', () => {
+    it("drops the icon, the quoted name and a frame's demo flag, as the renderer does", () => {
         expect(scanClasses('::: frame demo "header.html" icon="lucide:info" p-2\nx\n:::')).toEqual(['frame', 'p-2'])
         expect(scanClasses('::: note demo\nx\n:::')).toEqual(['demo', 'note'])
     })
