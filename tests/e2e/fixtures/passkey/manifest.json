@@ -1,0 +1,8 @@
+{
+    "name": "passkey e2e",
+    "appwrite": {
+        "endpoint": "http://localhost/v1",
+        "projectId": "passkey-e2e",
+        "auth": { "methods": ["passkey", "guest-manual"] }
+    }
+}

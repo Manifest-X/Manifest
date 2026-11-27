@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<!-- Fixture for tests/e2e/auth-passkey.e2e.mjs -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>passkey e2e</title>
+  <link rel="manifest" href="/manifest.json">
+  <script src="/mock-appwrite-passkey.js"></script>
+  <script src="/lib/manifest.appwrite.auth.js"></script>
+  <script defer src="/alpine.js"></script>
+</head>
+<body x-data>
+  <button id="login" x-show="$auth.passkeySupported && (!$auth.isAuthenticated || $auth.isAnonymous)" @click="$auth.loginPasskey()">Sign in with a passkey</button>
+  <button id="add" x-show="$auth.isAuthenticated && !$auth.isAnonymous" @click="$auth.addPasskey('Laptop')">Add a passkey</button>
+  <span id="method" x-text="$auth.method"></span>
+  <span id="error" x-text="$auth.error"></span>
+  <div x-effect="$auth.isAuthenticated && !$auth.isAnonymous && $auth.listPasskeys()"></div>
+  <ul id="list">
+    <template x-for="passkey in $auth.passkeys" :key="passkey.$id">
+      <li x-text="passkey.name"></li>
+    </template>
+  </ul>
+</body>
+</html>
