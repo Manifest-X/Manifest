@@ -7909,7 +7909,8 @@ function initializePasskeys() {
         }
     };
 
-    setTimeout(waitForStore, 100);
+    // The store exists by alpine:init; attach now so markup can call these as soon as it renders
+    waitForStore();
 }
 
 document.addEventListener('alpine:init', () => {

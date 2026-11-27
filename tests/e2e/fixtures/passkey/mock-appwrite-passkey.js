@@ -103,6 +103,7 @@
       return { $id: uid(), userId: passkey.userId, secret, expire: now() };
     }
     async listPasskeys() {
+      window.__listCalls = (window.__listCalls || 0) + 1;
       const user = requireSession();
       const passkeys = db.passkeys.filter(p => p.userId === user.$id && p.verified).map(p => ({ $id: p.$id, name: p.name, $createdAt: p.$createdAt, $updatedAt: p.$updatedAt, accessedAt: p.accessedAt }));
       return { total: passkeys.length, passkeys };

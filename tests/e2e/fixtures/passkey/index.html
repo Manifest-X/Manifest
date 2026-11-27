@@ -14,6 +14,7 @@
   <button id="add" x-show="$auth.isAuthenticated && !$auth.isAnonymous" @click="$auth.addPasskey('Laptop')">Add a passkey</button>
   <span id="method" x-text="$auth.method"></span>
   <span id="error" x-text="$auth.error"></span>
+  <div x-effect="$auth.isAuthenticated && !$auth.isAnonymous && $auth.listPasskeys()"></div>
   <ul id="list">
     <template x-for="passkey in $auth.passkeys" :key="passkey.$id">
       <li x-text="passkey.name"></li>

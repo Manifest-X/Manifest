@@ -104,6 +104,10 @@ try {
     await load()
     check('passkey session restored after reload', await auth('$auth.method') === 'passkey' && await auth('$auth.user.$id') === userId)
 
+    await page.waitForFunction(() => document.querySelectorAll('#list li').length === 1, { timeout: 5000 }).catch(() => {})
+    check('x-effect listing fills the list after reload', await text('#list').then(t => t.trim()) === 'Laptop')
+    check('listing ran a bounded number of times', await page.evaluate(() => window.__listCalls) <= 2, await page.evaluate(() => window.__listCalls))
+
     // Manage
     {
         const listed = await call('$auth.listPasskeys()')
