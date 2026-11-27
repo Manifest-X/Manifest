@@ -379,23 +379,32 @@ const TAILWIND_UTILITY_ROOTS = new Set([]);
 const FRAMEWORK_CLASSES = new Set([]);
 const AUTHOR_TAILWIND_SELECTOR = 'style[type="text/tailwindcss"]:not(#manifest-tailwind-variants)';
 
-// Whether the engine could read this token as a candidate: groups balanced, no markup or code outside them, no dangling dash
+// Whether the engine could read this token as a candidate: groups and quotes inside them balanced, no markup or code outside them, no dangling dash
 function engineCandidate(cls) {
-    let depth = 0, outside = '';
-    for (const ch of cls) {
-        if (ch === '[' || ch === '(') depth++;
+    let depth = 0, outside = '', quote = '';
+    for (let i = 0; i < cls.length; i++) {
+        const ch = cls[i];
+        if (quote) {
+            if (ch === '\\') i++;
+            else if (ch === quote) quote = '';
+        } else if (depth && (ch === "'" || ch === '"')) quote = ch;
+        else if (ch === '[' || ch === '(') depth++;
         else if (ch === ']' || ch === ')') { if (--depth < 0) return false; }
         else if (!depth) outside += ch;
     }
-    return depth === 0 && !/[='"`<>{};,\\$]/.test(outside) && !cls.endsWith('-');
+    return !quote && depth === 0 && !/[='"`<>{};,\\$]/.test(outside) && !cls.endsWith('-');
 }
 
 // The utility after the last variant, without important or negative marks
 function utilityPart(cls) {
-    let depth = 0, start = 0;
+    let depth = 0, start = 0, quote = '';
     for (let i = 0; i < cls.length; i++) {
         const ch = cls[i];
-        if (ch === '[' || ch === '(') depth++;
+        if (quote) {
+            if (ch === '\\') i++;
+            else if (ch === quote) quote = '';
+        } else if (depth && (ch === "'" || ch === '"')) quote = ch;
+        else if (ch === '[' || ch === '(') depth++;
         else if (ch === ']' || ch === ')') depth--;
         else if (ch === ':' && !depth) start = i + 1;
     }

@@ -177,17 +177,18 @@ describe('which tokens could need the engine', () => {
     })
 
     it('bare utilities the engine has always ask when the bake did not see them', async () => {
-        const words = ['hidden', 'grow', 'container', 'shadow', 'truncate', 'italic', 'sticky', 'rounded', 'underline', 'transition']
+        const words = ['hidden', 'grow', 'container', 'shadow', 'truncate', 'italic', 'sticky', 'rounded', 'underline', 'transition', 'filter']
         expect(await asked(words)).toEqual(words.map(() => true))
     })
 
     it('tokens that cannot be candidates never ask', async () => {
-        const junk = ['for=', 'name=', '"quoted', "it's", 'a{b}', 'x;y', 'f(x', 'a]b', '`tpl`', 'a,b', '<b>', '${x}', 'gradient-layer-icon-', 'bg-']
+        const junk = ['for=', 'name=', '"quoted', "it's", 'a{b}', 'x;y', 'f(x', 'a]b', '`tpl`', 'a,b', '<b>', '${x}', 'gradient-layer-icon-', 'bg-', "content-['(]", "content-[']"]
         expect(await asked(junk)).toEqual(junk.map(() => false))
     })
 
     it('arbitrary values with = or quotes inside brackets still ask', async () => {
-        const real = ["content-['x']", 'data-[state=open]:flex', '[&_a]:underline', 'bg-(--brand)', 'w-[calc(100%-1rem)]']
+        const real = ["content-['x']", 'data-[state=open]:flex', '[&_a]:underline', 'bg-(--brand)', 'w-[calc(100%-1rem)]',
+            "content-['(']", "content-[')']", "content-['[']", "content-[']']", "before:content-['(']", 'content-["]"]', "content-['\\'(']", "[&[data-x=']']]:flex"]
         expect(await asked(real)).toEqual(real.map(() => true))
     })
 

@@ -4,7 +4,7 @@
  * 1. no stamp (no sheet, an unstamped sheet, the retired -complete flag): same requests as BASE_LIB, engine once, same styles;
  * 2. matching skip stamp: no engine request, styles equal to the engine run;
  * 3. version mismatch, hash mismatch, unreadable sheet, author text/tailwindcss block: engine once, styled;
- * 4. unknown token later via :class, x-transition, injected HTML, a component: engine once, class styled; remembered next visit;
+ * 4. unknown token later via :class, x-transition, injected HTML (incl. a quoted bracket), a component: engine once, styled; remembered;
  * 5. shadow mode: engine as before, verdict readable from Manifest.tailwindStamp;
  * 6. scan parity: tokens the browser module records on a page equal the node scan of its HTML (Chromium serialisation).
  *
@@ -70,6 +70,7 @@ function addLate() {
 }
 </script>`, null, 'transition-duration'],
     inject: [`<div id="host"></div><button id="go" onclick="document.getElementById('host').innerHTML = '<span id=late class=&quot;rotate-6 inline-block&quot;>i</span>'">go</button>`, 'rotate-6', 'rotate'],
+    quoted: [`<div id="host"></div><button id="go" onclick="document.getElementById('host').innerHTML = '<span id=late class=&quot;before:content-[\\'(\\']&quot;>q</span>'">go</button>`, "before:content-['(']", 'content', '::before'],
     component: [`<div id="host" x-data="{ show: false }"><button id="go" @click="show = true">go</button><template x-if="show"><x-late-card></x-late-card></template></div>`, 'tracking-widest', 'letter-spacing'],
 }
 const LATE_CARD = '<div id="late" class="tracking-widest">component</div>'
@@ -226,7 +227,7 @@ async function run(loader) {
         }
 
         // 4. A token outside the stamp later
-        for (const [name, [, token, prop]] of Object.entries(LATE)) {
+        for (const [name, [, token, prop, pseudo = null]] of Object.entries(LATE)) {
             const ctx = await browser.createBrowserContext()
             const r = await visit(srv, `/late-${name}`, { ctx, keep: true })
             check(`late ${name}: engine not requested at boot`, r.engine === 0 && r.tags === 0, `server ${r.engine}, tags ${r.tags}`)
@@ -238,8 +239,8 @@ async function run(loader) {
             const tags = await engineTags(r.page)
             check(`late ${name}: engine loaded once`, srv.counts.engine === 1 && tags === 1, `server ${srv.counts.engine}, tags ${tags}`)
             check(`late ${name}: trigger recorded`, v && v.trigger && v.trigger.reason === 'token' && (token ? v.trigger.token === token : ['transition-transform', 'duration-1000', 'skew-y-6', 'skew-y-0'].includes(v.trigger.token)), JSON.stringify(v && v.trigger))
-            const got = await r.page.$eval('#late', (e, p) => getComputedStyle(e).getPropertyValue(p), prop)
-            const unstyled = await r.page.evaluate((p) => { const d = document.createElement('div'); document.body.appendChild(d); const v = getComputedStyle(d).getPropertyValue(p); d.remove(); return v }, prop)
+            const got = await r.page.$eval('#late', (e, p, ps) => getComputedStyle(e, ps).getPropertyValue(p), prop, pseudo)
+            const unstyled = await r.page.evaluate((p, ps) => { const d = document.createElement('div'); document.body.appendChild(d); const v = getComputedStyle(d, ps).getPropertyValue(p); d.remove(); return v }, prop, pseudo)
             if (name === 'transition') {
                 // The first run may start before the engine's CSS lands (Alpine reads the duration at start); the next one is styled
                 await r.page.evaluate(() => { document.getElementById('late').id = 'late-first'; addLate() })
@@ -251,7 +252,7 @@ async function run(loader) {
                 await ref.page.click('#go')
                 await ref.page.waitForFunction(() => document.querySelector('#late'), { timeout: 5000 }).catch(() => { })
                 await wait(1500)
-                const want = await ref.page.$eval('#late', (e, p) => getComputedStyle(e).getPropertyValue(p), prop)
+                const want = await ref.page.$eval('#late', (e, p, ps) => getComputedStyle(e, ps).getPropertyValue(p), prop, pseudo)
                 await ref.page.close(); await ref.ctx.close()
                 check(`late ${name}: ${token} styled (${prop})`, got === want && got !== unstyled, `${got} vs engine ${want}, unstyled ${unstyled}`)
             }
