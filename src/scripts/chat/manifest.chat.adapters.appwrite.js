@@ -11,6 +11,7 @@
  *  chat: { appwriteDatabaseId, appwriteTableId, ttlHours }.
  *  Table columns: conversationId (indexed) · text · authorId · authorName ·
  *  authorColor? · replyTo?  — ts/id come from $createdAt/$id.
+ *  Author fields are self-asserted; colour is always derived from authorId.
  */
 
 (function () {
@@ -26,6 +27,11 @@
         function hashColor(id) {
             let h = 0; for (const ch of String(id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
             return `hsl(${h % 360} 60% 45%)`;
+        }
+
+        function nameOf(v) {
+            const s = typeof v === 'string' ? v.trim().slice(0, 80) : '';
+            return s && !/^[^\s@]+@[^\s@]+$/.test(s) ? s : 'Guest';
         }
 
         function appwriteAdapter(opts) {
@@ -50,16 +56,17 @@
             function me() {
                 const auth = window.Alpine ? window.Alpine.store('auth') : null;
                 const u = auth && auth.user;
-                if (u && u.$id) return { id: u.$id, kind: 'human', displayName: u.name || u.email || 'Guest', color: hashColor(u.$id) };
+                if (u && u.$id) return { id: u.$id, kind: 'human', displayName: nameOf(u.name), color: hashColor(u.$id) };
                 let gid = null;
                 try { gid = localStorage.getItem('mnfst.chat.gid'); if (!gid) { gid = 'g_' + Math.random().toString(36).slice(2, 10); localStorage.setItem('mnfst.chat.gid', gid); } } catch (_) { gid = 'g_anon'; }
                 return { id: gid, kind: 'human', displayName: 'Guest', color: hashColor(gid) };
             }
 
             function toMsg(row) {
+                const aid = row.authorId == null ? '' : String(row.authorId);
                 return {
                     id: row.$id, conversationId: row.conversationId,
-                    author: { id: row.authorId, kind: 'human', displayName: row.authorName, color: row.authorColor || hashColor(row.authorId) },
+                    author: { id: aid, kind: 'human', displayName: nameOf(row.authorName), color: hashColor(aid) },
                     body: { text: row.text }, replyTo: row.replyTo || undefined,
                     ts: row.$createdAt, status: 'delivered'
                 };
