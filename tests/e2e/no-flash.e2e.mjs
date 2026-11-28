@@ -7,7 +7,7 @@
  * 5. if Alpine fails to load, every parse-time hide is released;
  * 6. markup a script inserts during parsing, and component markup swapped in before Alpine, are covered too.
  * Prints LCP for a page whose main content is x-show (truthy), and the parse cost on large pages
- * (30k/60k elements, a third with x-show; 60k with none).
+ * (30k/60k elements, a third with x-show; 60k with none; with and without the router).
  *
  * Run: npm run build && node tests/e2e/no-flash.e2e.mjs
  * FLASH_SRC=<dir> serves another src/ (e.g. the old tree, to compare). FLASH_LARGE=0 skips the large pages.
@@ -78,6 +78,8 @@ const PAGES = {
   large30k: page({ modules: ' data-modules="tooltips"', body: large(30000) }),
   large60k: page({ modules: ' data-modules="tooltips"', body: large(60000) }),
   large60kPlain: page({ modules: ' data-modules="tooltips"', body: large(60000, false) }),
+  large30kRouter: page({ modules: ' data-modules="router,tooltips"', body: large(30000) }),
+  large60kRouter: page({ modules: ' data-modules="router,tooltips"', body: large(60000) }),
 }
 const SCENARIOS = { slowModules: { mod: 400, alp: 0 }, slowAlpine: { mod: 0, alp: 1500 }, fast: { mod: 0, alp: 0 } }
 let delay = SCENARIOS.slowModules
@@ -104,6 +106,10 @@ async function run(kind) {
   const errors = []; p.on('pageerror', e => errors.push(e.message))
   await p.evaluateOnNewDocument((ids) => {
     window.__frames = []; window.__lcp = 0
+    // Document-wide observers started before the document is parsed
+    window.__earlyObservers = 0
+    const observe = MutationObserver.prototype.observe
+    MutationObserver.prototype.observe = function (target, opts) { if (document.readyState === 'loading' && target === document.documentElement) window.__earlyObservers++; return observe.call(this, target, opts) }
     document.addEventListener('alpine:init', () => { window.__alpineAt = performance.now() })
     document.addEventListener('DOMContentLoaded', () => { window.__dcl = performance.now() })
     new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__lcp = Math.round(e.startTime) }).observe({ type: 'largest-contentful-paint', buffered: true })
@@ -122,7 +128,7 @@ async function run(kind) {
     for (const id of ids) per[id] = { frames: f.filter(x => x[id]).length, first: f[0]?.[id], firstShown: f.find(x => x[id])?.t ?? null }
     const end = Object.fromEntries(ids.map(id => { const el = document.getElementById(id) || document.querySelector(`[data-t="${id}"]`); return [id, el ? el.getClientRects().length > 0 : null] }))
     const fcp = performance.getEntriesByName('first-contentful-paint')[0]?.startTime
-    return { per, end, cloaked: [...document.querySelectorAll('[x-cloak]')].map(e => e.id || e.outerHTML.slice(0, 40)), lcp: window.__lcp, alpineAt: Math.round(window.__alpineAt), dcl: Math.round(window.__dcl), fcp: Math.round(fcp || 0), firstFrame: f[0]?.t }
+    return { per, end, earlyObservers: window.__earlyObservers, leftoverRules: [...document.querySelectorAll('style')].filter(st => st.textContent.includes('x-show')).length, cloaked: [...document.querySelectorAll('[x-cloak]')].map(e => e.id || e.outerHTML.slice(0, 40)), lcp: window.__lcp, alpineAt: Math.round(window.__alpineAt), dcl: Math.round(window.__dcl), fcp: Math.round(fcp || 0), firstFrame: f[0]?.t }
   }, ids)
   await ctx.close()
   return { ...out, errors }
@@ -144,6 +150,8 @@ for (const [name, d] of Object.entries(SCENARIOS)) {
     check(r.per.main.firstShown !== null && r.per.main.firstShown <= r.alpineAt + 60, `${label}: x-show truthy content appears at Alpine start`, { firstShown: r.per.main.firstShown, alpineAt: r.alpineAt })
     check(r.end.main && r.end.plain && !r.end.xs && !r.end.xsi && !r.end.menu && !r.end.hid && (!tabs || (r.end.t1 && !r.end.t2 && r.end.h2 && !r.end.h1 && r.end.c1 && r.end.c2 && !r.end.c3)), `${label}: state after Alpine`, r.end)
     check((r.per.own.firstShown ?? Infinity) >= r.alpineAt - 20 && r.cloaked.length === 0, `${label}: author x-cloak kept until Alpine, none left after`, { own: r.per.own.frames, cloaked: r.cloaked })
+    check(r.leftoverRules === 0, `${label}: the temporary rule is gone after Alpine starts`, r.leftoverRules)
+    if (kind === 'noTabs') check(r.earlyObservers === 0, `${label}: no router or tabs module, no parse-time observer`, r.earlyObservers)
     check(r.errors.length === 0, `${label}: no page errors`, r.errors)
   }
 }
@@ -168,7 +176,7 @@ async function frames(kind, ids, settleMs) {
     const per = {}
     for (const id of ids) per[id] = { frames: f.filter(x => x[id]).length, firstShown: f.find(x => x[id])?.t ?? null, blinks: f.filter((x, i) => i > 0 && f[i - 1][id] && !x[id]).length }
     const end = Object.fromEntries(ids.map(id => { const el = document.getElementById(id); return [id, el ? el.getClientRects().length > 0 : null] }))
-    return { per, end, alpineAt: window.__alpineAt ? Math.round(window.__alpineAt) : null, cloaked: [...document.querySelectorAll('[x-cloak]')].map(e => e.id) }
+    return { per, end, leftoverRules: [...document.querySelectorAll('style')].filter(st => st.textContent.includes('x-show')).length, alpineAt: window.__alpineAt ? Math.round(window.__alpineAt) : null, cloaked: [...document.querySelectorAll('[x-cloak]')].map(e => e.id) }
   }, ids)
   await ctx.close()
   return { ...out, errors }
@@ -177,7 +185,7 @@ delay = SCENARIOS.fast
 for (const kind of ['alpineFail', 'alpineFailDerived']) {
   const r = await frames(kind, ['af', 'a1', 'a2'], 2500)
   metrics[kind] = r.per
-  check(r.end.af && r.end.a1 && r.end.a2 && r.cloaked.length === 0, `${kind}: Alpine fails to load, every parse-time hide is released`, { end: r.end, cloaked: r.cloaked })
+  check(r.end.af && r.end.a1 && r.end.a2 && r.cloaked.length === 0 && r.leftoverRules === 0, `${kind}: Alpine fails to load, every parse-time hide is released`, { end: r.end, cloaked: r.cloaked })
 }
 for (const kind of ['inserted', 'insertedNoBlocker']) {
   const r = await frames(kind, ['ins', 'insT', 'tins', 'after'], 600)
@@ -199,7 +207,7 @@ const pre = await run('prerendered')
 check(pre.per.main.first && pre.per.plain.first && !pre.per.xs.frames && pre.cloaked.length === 0, 'prerendered: baked state from the first frame, never cloaked', { per: pre.per, cloaked: pre.cloaked })
 if (LARGE) {
   delay = SCENARIOS.fast
-  for (const kind of ['large30k', 'large60k', 'large60kPlain']) {
+  for (const kind of ['large30k', 'large60k', 'large60kPlain', 'large30kRouter', 'large60kRouter']) {
     const runs = []
     for (let i = 0; i < 3; i++) runs.push(await run(kind))
     const med = (k) => runs.map(x => x[k]).sort((a, b) => a - b)[1]

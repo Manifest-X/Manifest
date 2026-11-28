@@ -74,30 +74,6 @@ function componentContainer(name, content) {
     return entry.container.cloneNode(true);
 }
 
-// Before Alpine starts, cloak what it will hide in swapped-in markup, as the loader does while parsing
-function cloakBeforeAlpine(placeholder, roots) {
-    const cloaks = window.__manifestParseCloaks;
-    if (!cloaks || window.__manifestAlpineStarted || window.__manifestAlpineFailed || window.__manifestRender === true) return;
-    if (placeholder.closest('[x-ignore]')) return;
-    const scoped = !!placeholder.closest('[x-data]');
-    const hides = (el) => {
-        for (const attr of el.attributes) {
-            const n = attr.name;
-            if (n === 'x-show' || n.startsWith('x-show.') || n === ':hidden' || n === 'x-bind:hidden') return true;
-        }
-        return false;
-    };
-    for (const root of roots) {
-        for (const el of [root, ...root.querySelectorAll('*')]) {
-            if (!hides(el) || el.hasAttribute('x-cloak') || el.closest('[x-ignore]')) continue;
-            if (!scoped && !el.closest('[x-data]')) continue;
-            el.setAttribute('x-cloak', '');
-            el.__manifestParseCloak = true;
-            cloaks.push(el);
-        }
-    }
-}
-
 window.ManifestComponentsProcessor = {
     async processComponent(element, instanceId) {
         const name = element.tagName.toLowerCase().replace('x-', '');
@@ -352,7 +328,6 @@ window.ManifestComponentsProcessor = {
                 }
             });
         }
-        cloakBeforeAlpine(element, topLevelElements);
         const parent = element.parentElement;
         if (!parent || !document.contains(element)) {
             console.debug('[Manifest Components] skipped: element detached before swap', element);

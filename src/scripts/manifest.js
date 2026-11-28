@@ -933,10 +933,7 @@
 	}
 	stubEditMagic();
 	// Plugins loaded after Alpine started adopt what its first walk already passed
-	if (typeof document !== 'undefined') document.addEventListener('alpine:initialized', () => {
-		window.__manifestAlpineStarted = true;
-		if (window.__manifestParseCloaks) window.__manifestParseCloaks.length = 0;
-	}, { once: true });
+	if (typeof document !== 'undefined') document.addEventListener('alpine:initialized', () => { window.__manifestAlpineStarted = true; }, { once: true });
 	// On-use modules not registered when Alpine walks their element: the element and its subtree
 	// are held uninitialised (Alpine.deferInit, inert like a deferred container, x-cloak stays) and
 	// started once, after the directive registers. Their magics answer through a forwarding
@@ -1868,41 +1865,42 @@ function routeConditionsMatch(routeCondition, normalizedPath, matches) {
 		return readings.every(codes => routeConditionsMatch(condition, path, (p, c) => routePathMatches(p, c, codes)) === false);
 	}
 
-	// Hides made before Alpine (here and by the components processor); released if Alpine or the tabs module never arrives
+	// Until Alpine starts, hide what it will decide on: x-show and :hidden inside an x-data scope, outside x-ignore; never on prerendered pages
+	const PENDING_RULE = ':root:not(:has(meta[name="manifest:prerendered"][content="1"])) :is([x-show], [x-show\\.important], [\\:hidden], [x-bind\\:hidden]):is([x-data], [x-data] *):not([x-ignore], [x-ignore] *) { display: none !important }';
+	let pendingStyle = null;
+	function holdUntilAlpine() {
+		if (window.__manifestRender === true || !document.head) return;
+		pendingStyle = document.createElement('style');
+		pendingStyle.textContent = PENDING_RULE;
+		document.head.appendChild(pendingStyle);
+		document.addEventListener('alpine:initialized', releaseUntilAlpine, { once: true });
+	}
+	function releaseUntilAlpine() {
+		if (pendingStyle) pendingStyle.remove();
+		pendingStyle = null;
+	}
+	// Tab panels hidden at parse until the tabs module converts them; shown again if it or Alpine never arrives
 	const parseHiddenPanels = [];
 	function revealParseHiddenPanels(force) {
 		if (window.ensureTabsPluginInitialized && !force) return;
 		for (const el of parseHiddenPanels.splice(0)) if (el.__manifestTabHidden && el.style.display === 'none' && !el.hasAttribute('x-show')) el.style.removeProperty('display');
 	}
+	// Alpine will not start: show everything held for it
 	function releaseParseHides() {
-		window.__manifestAlpineFailed = true;
-		for (const el of (window.__manifestParseCloaks || []).splice(0)) if (el.__manifestParseCloak) el.removeAttribute('x-cloak');
+		releaseUntilAlpine();
+		document.querySelectorAll('[x-cloak]').forEach(el => { if (el.__manifestRouteCloak) el.removeAttribute('x-cloak'); });
 		revealParseHiddenPanels(true);
 	}
-	if (typeof document !== 'undefined') document.addEventListener('alpine:initialized', () => {
-		window.__manifestAlpineStarted = true;
-		if (window.__manifestParseCloaks) window.__manifestParseCloaks.length = 0;
-	}, { once: true });
 
-	// Hide, as the parser adds them, what Alpine, the tabs module or the router will hide
+	// Hide, as the parser adds them, what CSS can't decide: routes the router will hide and tab panels
 	function cloakWhileParsing({ routes, tabs }) {
 		if (document.readyState !== 'loading' || typeof MutationObserver === 'undefined' || window.__manifestRender === true) return;
-		const cloaks = window.__manifestParseCloaks = [];
+		holdUntilAlpine();
+		if (!routes && !tabs) return;
 		let path;
 		const tabGroups = new Map();
 		const seen = new WeakSet();
-		const alpineHides = (el) => {
-			for (const attr of el.attributes) {
-				const n = attr.name;
-				if (n === 'x-show' || n.startsWith('x-show.') || n === ':hidden' || n === 'x-bind:hidden') return true;
-			}
-			return false;
-		};
-		const cloak = (el) => {
-			el.setAttribute('x-cloak', '');
-			el.__manifestParseCloak = true;
-			cloaks.push(el);
-		};
+		const hasXShow = (el) => { for (const attr of el.attributes) if (attr.name === 'x-show' || attr.name.startsWith('x-show.')) return true; return false; };
 		// The tabs module shows the panels matching each group's first panel (id, else first class) unless an x-data sets the group's tab
 		const inactivePanel = (el) => {
 			const ident = el.id || (el.className ? el.className.split(' ')[0] : '');
@@ -1920,53 +1918,36 @@ function routeConditionsMatch(routeCondition, normalizedPath, matches) {
 		const visit = (el) => {
 			const condition = routes && path !== null ? el.getAttribute('x-route') : null;
 			const panel = tabs && el.hasAttribute('x-tabpanel');
-			const hides = alpineHides(el);
-			if (condition === null && !panel && !hides) return;
+			if (condition === null && !panel) return;
 			if (seen.has(el)) return;
 			seen.add(el);
 			if (el.hasAttribute('x-cloak') || el.closest('[x-ignore]')) return;
-			if (condition && routeSurelyHidden(condition, path)) {
-				cloak(el);
-				el.__manifestRouteCloak = true;
-				return;
-			}
-			if (panel) {
-				if (inactivePanel(el) && !el.style.display) {
-					el.style.display = 'none';
-					el.__manifestTabHidden = true;
-					parseHiddenPanels.push(el);
+			if (condition !== null) {
+				if (hasXShow(el) || (condition && routeSurelyHidden(condition, path))) {
+					el.setAttribute('x-cloak', '');
+					el.__manifestRouteCloak = true;
 				}
 				return;
 			}
-			if (hides && el.closest('[x-data]')) {
-				cloak(el);
-				if (condition !== null) el.__manifestRouteCloak = true;
+			if (inactivePanel(el) && !el.style.display) {
+				el.style.display = 'none';
+				el.__manifestTabHidden = true;
+				parseHiddenPanels.push(el);
 			}
 		};
-		const SELECTOR = '[x-route], [x-show], [x-tabpanel], [\\:hidden], [x-bind\\:hidden]';
 		const observer = new MutationObserver((records) => {
 			if (path === undefined && document.body) {
-				if (document.querySelector('meta[name="manifest:prerendered"][content="1"]')) {
-					window.__manifestParseCloaks = undefined;
-					return observer.disconnect();
-				}
+				if (document.querySelector('meta[name="manifest:prerendered"][content="1"]')) return observer.disconnect();
 				path = routes ? parsePagePath() : null;
 			}
 			if (path === undefined) return;
-			// Parser-added elements arrive one per record; a node whose children came without records was inserted whole
-			const batch = new Set();
-			for (const record of records) for (const node of record.addedNodes) batch.add(node);
-			for (const node of batch) {
-				if (node.nodeType !== 1) continue;
-				visit(node);
-				const child = node.firstElementChild;
-				if (child && !batch.has(child)) node.querySelectorAll(SELECTOR).forEach(visit);
-			}
+			for (const record of records) for (const node of record.addedNodes) if (node.nodeType === 1) visit(node);
 		});
 		observer.observe(document.documentElement, { childList: true, subtree: true });
 		document.addEventListener('DOMContentLoaded', () => {
 			observer.disconnect();
-			if (path !== undefined) document.querySelectorAll(SELECTOR).forEach(visit);
+			// Markup a script inserted whole
+			if (path !== undefined) document.querySelectorAll('[x-route], [x-tabpanel]').forEach(visit);
 		}, { once: true });
 	}
 
