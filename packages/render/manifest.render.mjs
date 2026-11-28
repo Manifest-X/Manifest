@@ -31,6 +31,7 @@ import {
   stripDevOnlyContent,
   stripRuntimeTailwindArtifacts,
   stripDataTailwindAttr,
+  htmlUsesRuntimeTailwind,
   ensureDoctype,
   debakeThemeClass,
   extractUtilityStyleBlocks,
@@ -583,8 +584,7 @@ function stripInjectedPluginScripts(html, rootDir) {
 function indexHtmlUsesTailwind(rootDir) {
   const indexPath = join(rootDir, 'index.html');
   if (!existsSync(indexPath)) return false;
-  const html = readFileSync(indexPath, 'utf8');
-  return /\sdata-tailwind(?:=(["']).*?\1)?/i.test(html) && /<script[^>]*manifest\.min\.js/i.test(html);
+  return htmlUsesRuntimeTailwind(readFileSync(indexPath, 'utf8'));
 }
 
 function tailwindMissingMessage() {
@@ -3660,6 +3660,7 @@ if (_isDirectEntry) {
 
 // Exports for the CLI bin script and for unit testing.
 export {
+  indexHtmlUsesTailwind,
   stripTailwindPreflightConflicts,
   TAILWIND_CUSTOM_VARIANTS,
   TAILWIND_DARK_VARIANT,
