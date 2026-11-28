@@ -67,7 +67,7 @@ function initializeTeamsMembers() {
                         hasCustomRoles = Object.keys(appwriteConfig?.memberRoles || {}).length > 0
                             || Object.keys(teamRoles || {}).length > 0;
                         if (hasCustomRoles && !allowNoRoles) {
-                            this.error = 'Choose at least one role for this invite';
+                            this.error = 'Choose at least one role for this invite.';
                             return { success: false, error: this.error };
                         }
                     }
