@@ -270,11 +270,10 @@ describe('loader: Tailwind engine output cache', () => {
         expect(engineScripts()).toBe(1)
     })
 
-    it('leaves a complete shipped sheet in charge (no engine, no replay)', async () => {
+    it('leaves a stamped shipped sheet in charge (no replay)', async () => {
         store()
-        boot({ headExtra: block(A) + '<style data-mnfst-utilities data-mnfst-utilities-complete>.gap-2{gap:.5rem}</style>' })
+        boot({ headExtra: block(A) + '<link rel="stylesheet" href="data:text/css,.gap-2{gap:.5rem}" data-mnfst-utilities data-tailwind-stamp="4.3.1:x" data-tailwind-mode="skip">' })
         await settle()
         expect(cachedStyle()).toBeNull()
-        expect(engineScripts()).toBe(0)
     })
 })

@@ -1,14 +1,9 @@
 /**
  * @vitest-environment happy-dom
  *
- * Loader: `data-tailwind` normally fetches the bundled Tailwind engine in
- * parallel with plugins. A fully-baked page — a `<style data-mnfst-utilities
- * data-mnfst-utilities-complete>` sheet, stamped by publish/render once it
- * verified every scanned class got a rule (Manifest's own + the Tailwind
- * bake pass, see manifest.utilities.node.mjs) — should skip that fetch
- * entirely, since the engine would generate nothing new. Fails open: no such
- * sheet (or a `<link>` instead of an inline `<style>`, or no `-complete`
- * flag) still loads Tailwind as before.
+ * Loader: `data-tailwind` fetches the bundled Tailwind engine in parallel with modules. The retired
+ * `data-mnfst-utilities-complete` flag no longer skips it, on a <style> or a <link>; the publish-time
+ * stamp that replaces it is covered in loader-tailwind-stamp.test.js.
  */
 import { readFileSync } from 'fs'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -45,7 +40,7 @@ beforeEach(() => {
     if (!window.requestIdleCallback) window.requestIdleCallback = (fn) => setTimeout(fn, 0)
 })
 
-describe('loader: Tailwind engine skip on a fully-baked page', () => {
+describe('loader: shipped utilities sheets without a stamp still load the engine', () => {
     it('loads the Tailwind engine normally with no static sheet', async () => {
         boot()
         await settle()
@@ -58,25 +53,21 @@ describe('loader: Tailwind engine skip on a fully-baked page', () => {
         expect(document.querySelectorAll('script[src*="manifest.tailwind"]').length).toBe(1)
     })
 
-    it('still loads it for a <link> sheet even when marked complete (async — fails open)', async () => {
+    it('loads it for a <link> sheet carrying the retired complete flag', async () => {
         boot({ headExtra: '<link rel="stylesheet" data-mnfst-utilities data-mnfst-utilities-complete href="data:text/css,.gap-2{gap:.5rem}">' })
         await settle()
         expect(document.querySelectorAll('script[src*="manifest.tailwind"]').length).toBe(1)
     })
 
-    it('skips it for an inline <style> sheet marked complete', async () => {
+    it('loads it for an inline <style> sheet carrying the retired complete flag', async () => {
         boot({ headExtra: '<style data-mnfst-utilities data-mnfst-utilities-complete>.gap-2{gap:.5rem}</style>' })
         await settle()
-        expect(document.querySelectorAll('script[src*="manifest.tailwind"]').length).toBe(0)
-        // Everything else still boots normally.
+        expect(document.querySelectorAll('script[src*="manifest.tailwind"]').length).toBe(1)
         expect(window.__manifestLoaded).toBeTruthy()
     })
 })
 
-describe('loader: Manifest.loadPlugin("tailwind") — the uncovered-class watcher\'s lazy-load path', () => {
-    // The utilities plugin's runtime safety net (manifest.utilities.static.js
-    // setupUncoveredClassWatcher) calls this when it sees a class the "complete"
-    // bake doesn't cover. It must be a recognized plugin, not rejected as unknown.
+describe('loader: Manifest.loadPlugin("tailwind")', () => {
     it('is accepted (not "Unknown module") and fetches manifest.tailwind.min.js', async () => {
         boot({ tailwind: false })
         await settle()

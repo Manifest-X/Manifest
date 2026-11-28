@@ -2,7 +2,7 @@
  * Real-Chrome guard for the utilities compiler's steady-state cost:
  * 1. the first compile arms delta mode, so the first class added after boot is an
  *    insertRule, not a full document scan + regeneration;
- * 2. with nothing to generate (a complete shipped sheet, or framework classes only) it is armed too;
+ * 2. with nothing to generate (a shipped sheet covering the page, or framework classes only) it is armed too;
  * 3. a route change runs no document scan;
  * 4. a script or meta appended to <head> does not move the sheet; a stylesheet does;
  * 5. off a dev host, stylesheets are fetched once, with no cache-busting query;
@@ -36,7 +36,7 @@ ${extraHead}
 // A manifest component: its classes are known before the first compile, which generates their rules
 const REGISTRY = `<script>window.ManifestComponentsRegistry = { manifest: { components: ['card.html'] } }</script>`
 
-const BAKED = `<style data-mnfst-utilities data-mnfst-utilities-complete>@layer utilities { .p-2 { padding: calc(var(--spacing) * 2); } .bg-surface-2 { background-color: var(--color-surface-2); } }</style>`
+const BAKED = `<style data-mnfst-utilities>@layer utilities { .p-2 { padding: calc(var(--spacing) * 2); } .bg-surface-2 { background-color: var(--color-surface-2); } }</style>`
 
 function serve(requests) {
     return new Promise((resolve) => {
@@ -104,7 +104,7 @@ async function main() {
             await wait(2500)
             const state = await arm(p)
             check(state.armed, `${route}: delta mode is armed after boot`, state)
-            if (route === '/baked') check(state.entries === 0, `${route}: nothing generated over a complete sheet`, state)
+            if (route === '/baked') check(state.entries === 0, `${route}: nothing generated over a covering sheet`, state)
             if (route === '/generated') check(state.entries > 0, `${route}: the first compile's rules are recorded`, state)
 
             await addClass(p, 'n1', 'bg-red-500')

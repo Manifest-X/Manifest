@@ -815,8 +815,47 @@ function stripDevOnlyContent(html) {
   return out;
 }
 
+// Start tags only (raw-text bodies, comments and text untouched); attributes matched by exact name
+const TAG_RE = /<!--[\s\S]*?-->|<(script|style|textarea)(?=[\s/>])((?:[^>"']|"[^"]*"|'[^']*')*)>[\s\S]*?<\/\1\s*>|<([a-zA-Z][\w:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/gi;
+const ATTR_RE = /\s+([^\s"'>\/=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
+
+function tagHasAttr(attrs, name) {
+  for (const m of attrs.matchAll(ATTR_RE)) if (m[1].toLowerCase() === name) return true;
+  return false;
+}
+
+function mapStartTags(html, fn) {
+  return html.replace(TAG_RE, (m, rawName, rawAttrs, name, attrs) => {
+    const tag = rawName || name;
+    if (!tag) return m;
+    const a = rawName ? rawAttrs : attrs;
+    const next = fn(tag.toLowerCase(), a);
+    if (next === null) return '';
+    return next === a ? m : `<${tag}${next}${m.slice(1 + tag.length + a.length)}`;
+  });
+}
+
+// Loader `data-tailwind` (bare attribute, never data-tailwind-*) plus any engine-skip stamp:
+// the renderer writes no stamp, so a source one is stale on the rendered page.
+const TAILWIND_LOADER_ATTRS = new Set(['data-tailwind', 'data-tailwind-stamp', 'data-tailwind-mode']);
+function stripTailwindLoaderMarkup(html) {
+  return mapStartTags(html, (tag, attrs) => {
+    if (tag === 'script' && tagHasAttr(attrs, 'data-tailwind-tokens')) return null;
+    return attrs.replace(ATTR_RE, (m, n) => TAILWIND_LOADER_ATTRS.has(n.toLowerCase()) ? '' : m);
+  });
+}
+
+function htmlUsesRuntimeTailwind(html) {
+  let found = false;
+  mapStartTags(html, (tag, attrs) => {
+    if (tag === 'script' && /manifest\.min\.js/i.test(attrs) && tagHasAttr(attrs, 'data-tailwind')) found = true;
+    return attrs;
+  });
+  return found;
+}
+
 function stripRuntimeTailwindArtifacts(html) {
-  let out = html.replace(/\sdata-tailwind(?:=(["']).*?\1)?/gi, '');
+  let out = stripTailwindLoaderMarkup(html);
   // Remove PlayCDN-injected runtime Tailwind stylesheet from snapshots.
   out = out.replace(/<style>\s*\/\*!\s*tailwindcss[\s\S]*?<\/style>/gi, '');
   return out;
@@ -829,7 +868,7 @@ function stripRuntimeTailwindArtifacts(html) {
 // injects ANOTHER tailwind <style> block AFTER prerender.utilities.css,
 // breaking the cascade order so .hidden wins over .lg:col etc.
 function stripDataTailwindAttr(html) {
-  return html.replace(/\sdata-tailwind(?:=(["']).*?\1)?/gi, '');
+  return stripTailwindLoaderMarkup(html);
 }
 
 /** Prepend `<!DOCTYPE html>` unless one is already present.
@@ -1000,7 +1039,7 @@ function stripPrerenderedXDataDirectives(html) {
     if (expr.includes('$search') || expr.includes('$query')) return false;
     return scopeIdentifiers(expr).length === 0;
   }
-  return html.replace(/<(\w+)([^>]*)>/g, (full, tag, attrs) => {
+  return html.replace(/<([a-zA-Z][\w-]*)([^>]*)>/g, (full, tag, attrs) => {
     if (isHydrateMarkedAttrs(attrs)) return full;
     let outAttrs = attrs;
     outAttrs = outAttrs.replace(/\s+x-text="([^"]*\$x[^"]*)"/g, (match, expr) => (isStatic(expr) ? '' : match));
@@ -1016,7 +1055,7 @@ function stripPrerenderedXDataDirectives(html) {
 //    Use (?<!:) so we only strip literal attr=, not :attr= (e.g. class= not :class=).
 //    Never touch <script> tags (loader + injected plugins must be preserved; static HTML still runs them).
 function stripPrerenderDynamicBindings(html) {
-  return html.replace(/<(\w+)([^>]*)>/g, (match, tagName, attrsStr) => {
+  return html.replace(/<([a-zA-Z][\w-]*)([^>]*)>/g, (match, tagName, attrsStr) => {
     if (tagName.toLowerCase() === 'script') return match;
     if (isHydrateMarkedAttrs(attrsStr)) return match;
     const isAnchor = tagName.toLowerCase() === 'a';
@@ -1132,7 +1171,7 @@ function markPrerenderedManifestComponents(html) {
 // Remove empty inline mask-image styles emitted before data resolves
 // (e.g. style="mask-image: url()"), while keeping any :style/x-bind:style bindings.
 function stripEmptyInlineMaskStyles(html) {
-  return html.replace(/<(\w+)([^>]*)>/g, (full, tag, attrs) => {
+  return html.replace(/<([a-zA-Z][\w-]*)([^>]*)>/g, (full, tag, attrs) => {
     const styleMatch = attrs.match(/\sstyle=(["'])([\s\S]*?)\1/i);
     if (!styleMatch) return full;
     const quote = styleMatch[1];
@@ -4114,6 +4153,7 @@ export {
   stripDevOnlyContent,
   stripRuntimeTailwindArtifacts,
   stripDataTailwindAttr,
+  htmlUsesRuntimeTailwind,
   ensureDoctype,
   debakeThemeClass,
   extractUtilityStyleBlocks,

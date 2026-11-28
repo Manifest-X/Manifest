@@ -58,8 +58,8 @@ async function initializeAppwriteAuthPlugin() {
                     callbacks.process(callbackInfo);
                 }
 
-                // If no session and guest-auto is enabled, create guest session (not while the session check is unreachable)
-                if (!store.isAuthenticated && !store._sessionUnverified && store._guestAuto && store._createAnonymousSession) {
+                // If no session and guest-auto is enabled, create guest session (not while unverified or a link awaits confirmation)
+                if (!store.isAuthenticated && !store.signInPending && !store._sessionUnverified && store._guestAuto && store._createAnonymousSession) {
                     store._createAnonymousSession();
                 }
             };

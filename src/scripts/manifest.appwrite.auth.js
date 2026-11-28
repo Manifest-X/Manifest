@@ -722,6 +722,7 @@ function initializeAuthStore() {
         error: null,
         magicLinkSent: false,
         magicLinkExpired: false,
+        signInPending: false, // A sign-in link awaits confirmation
         otpSent: false, // OTP (email/phone): a code has been sent and is awaiting entry
         otpExpired: false, // OTP (email/phone): the entered code was wrong/expired
         otpPhrase: null, // Email OTP: security phrase to display (when enabled; phone has none)
@@ -1796,8 +1797,8 @@ async function initializeAppwriteAuthPlugin() {
                     callbacks.process(callbackInfo);
                 }
 
-                // If no session and guest-auto is enabled, create guest session (not while the session check is unreachable)
-                if (!store.isAuthenticated && !store._sessionUnverified && store._guestAuto && store._createAnonymousSession) {
+                // If no session and guest-auto is enabled, create guest session (not while unverified or a link awaits confirmation)
+                if (!store.isAuthenticated && !store.signInPending && !store._sessionUnverified && store._guestAuto && store._createAnonymousSession) {
                     store._createAnonymousSession();
                 }
             };
@@ -2598,14 +2599,14 @@ function initializeTeamsCore() {
                                 try {
                                     const roles = Array.isArray(membership.roles)
                                         ? membership.roles
-                                        : (membership.roles ? [membership.roles] : ['owner']);
+                                        : (membership.roles ? [membership.roles] : []);
 
-                                    // Use email if available, otherwise userId
+                                    // Use email if available, otherwise userId; a role-less member stays role-less
                                     const email = membership.email || membership.userEmail;
                                     if (email) {
-                                        await this.inviteMember(newTeamId, roles, email);
+                                        await this.inviteMember(newTeamId, roles, email, null, null, null, null, { allowNoRoles: true });
                                     } else if (membership.userId) {
-                                        await this.inviteMember(newTeamId, roles, null, membership.userId);
+                                        await this.inviteMember(newTeamId, roles, null, membership.userId, null, null, null, { allowNoRoles: true });
                                     }
                                 } catch (inviteError) {
                                     // Log but continue with other members
@@ -3044,6 +3045,32 @@ async function resolvePersonalTeamName(nameConfig) {
     return nameConfig;
 }
 
+// Default teams this browser seeded, per user
+function readSeededTeamIds(userId) {
+    if (!userId) return [];
+    try {
+        const ids = JSON.parse(localStorage.getItem(`manifest:default-teams:${userId}`) || '[]');
+        return Array.isArray(ids) ? ids : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function writeSeededTeamIds(userId, ids) {
+    if (!userId) return;
+    try {
+        localStorage.setItem(`manifest:default-teams:${userId}`, JSON.stringify(ids));
+    } catch (e) {
+        console.warn('[Manifest Appwrite Auth] Failed to record default teams:', e);
+    }
+}
+
+function recordSeededTeam(userId, teamId) {
+    if (!userId || !teamId) return;
+    const ids = readSeededTeamIds(userId);
+    if (!ids.includes(teamId)) writeSeededTeamIds(userId, [...ids, teamId]);
+}
+
 // Add default teams methods to auth store
 function initializeTeamsDefaults() {
     if (typeof Alpine === 'undefined') {
@@ -3167,12 +3194,21 @@ function initializeTeamsDefaults() {
                     }
                 }
 
-                // Find teams matching default team names
+                // Find teams matching default team names; a same-name seed from this browser goes first
                 const defaultTeams = this.teams.filter(team => allDefaultTeamNames.includes(team.name));
-                return defaultTeams;
+                const seeded = readSeededTeamIds(this.user?.$id);
+                const ordered = [];
+                for (const team of defaultTeams) {
+                    if (ordered.includes(team)) continue;
+                    const own = seeded.includes(team.$id) ? null
+                        : defaultTeams.find(t => t.name === team.name && seeded.includes(t.$id) && !ordered.includes(t));
+                    if (own) ordered.push(own);
+                    ordered.push(team);
+                }
+                return ordered;
             };
 
-            // Clean up duplicate permanent/template teams (keeps the oldest one, deletes the rest)
+            // Clean up duplicate permanent/template teams this browser seeded (keeps the oldest one, deletes the rest)
             // This bypasses the immutable check for duplicates only
             store.cleanupDuplicateDefaultTeams = async function () {
                 if (!this.teams || this.teams.length === 0) {
@@ -3208,10 +3244,13 @@ function initializeTeamsDefaults() {
 
                 let cleanedCount = 0;
                 const errors = [];
+                const userId = this.user?.$id;
+                const seeded = readSeededTeamIds(userId);
+                const removed = [];
 
-                // For each default team name, find duplicates and delete all but the oldest
+                // For each default team name, find duplicates among this browser's seeds and delete all but the oldest
                 for (const teamName of allDefaultTeamNames) {
-                    const matchingTeams = this.teams.filter(team => team.name === teamName);
+                    const matchingTeams = this.teams.filter(team => team.name === teamName && seeded.includes(team.$id));
 
                     if (matchingTeams.length > 1) {
                         // Sort by creation date (oldest first) and keep the first one
@@ -3234,6 +3273,7 @@ function initializeTeamsDefaults() {
                                     // Directly delete via Appwrite API (bypassing our deleteTeam method which checks immutable)
                                     await this._appwrite.teams.delete({ teamId: team.$id });
                                     cleanedCount++;
+                                    removed.push(team.$id);
                                 }
                             } catch (error) {
                                 const errorMsg = `Error deleting duplicate team ${team.$id}: ${error.message}`;
@@ -3241,6 +3281,10 @@ function initializeTeamsDefaults() {
                             }
                         }
                     }
+                }
+
+                if (removed.length > 0) {
+                    writeSeededTeamIds(userId, readSeededTeamIds(userId).filter(id => !removed.includes(id)));
                 }
 
                 // Refresh teams list after cleanup
@@ -3311,6 +3355,8 @@ function initializeTeamsDefaults() {
                     const result = await this.createTeam(null, teamName, []);
 
                     if (result.success) {
+                        recordSeededTeam(this.user?.$id, result.team?.$id);
+
                         // Remove from deleted teams list
                         try {
                             const userId = this.user?.$id;
@@ -3374,6 +3420,8 @@ async function ensureDefaultTeams(store) {
 
     const createdTeams = [];
     const existingTeams = [];
+    const userId = store.user?.$id;
+    const seeded = readSeededTeamIds(userId);
 
     // Get list of deleted template teams for this user (don't recreate them)
     let deletedTeams = [];
@@ -3406,7 +3454,7 @@ async function ensureDefaultTeams(store) {
                     console.warn(`[Manifest Appwrite Auth] Found ${matchingTeams.length} duplicate permanent teams with name "${teamName}". Using the first one.`);
                     console.warn('[Manifest Appwrite Auth] Duplicate team IDs:', matchingTeams.map(t => t.$id));
                 }
-                existingTeams.push(matchingTeams[0]);
+                existingTeams.push(matchingTeams.find(team => seeded.includes(team.$id)) || matchingTeams[0]);
                 continue;
             }
 
@@ -3416,6 +3464,7 @@ async function ensureDefaultTeams(store) {
                 const result = await store.createTeam(null, teamName, []);
 
                 if (result.success) {
+                    recordSeededTeam(userId, result.team?.$id);
                     createdTeams.push(result.team);
                 } else {
                     console.warn(`[Manifest Appwrite Auth] Could not seed permanent team "${teamName}":`, result.error);
@@ -3450,7 +3499,7 @@ async function ensureDefaultTeams(store) {
                     console.warn(`[Manifest Appwrite Auth] Found ${matchingTeams.length} duplicate template teams with name "${teamName}". Using the first one.`);
                     console.warn('[Manifest Appwrite Auth] Duplicate team IDs:', matchingTeams.map(t => t.$id));
                 }
-                existingTeams.push(matchingTeams[0]);
+                existingTeams.push(matchingTeams.find(team => seeded.includes(team.$id)) || matchingTeams[0]);
                 continue;
             }
 
@@ -3460,6 +3509,7 @@ async function ensureDefaultTeams(store) {
                 const result = await store.createTeam(null, teamName, []);
 
                 if (result.success) {
+                    recordSeededTeam(userId, result.team?.$id);
                     createdTeams.push(result.team);
                 } else {
                     console.warn(`[Manifest Appwrite Auth] Could not seed template team "${teamName}":`, result.error);
@@ -4928,7 +4978,7 @@ function initializeTeamsMembers() {
         const store = Alpine.store('auth');
         if (store && !store.inviteMember) {
             // Invite member to team
-            store.inviteMember = async function (teamId, roles, email = null, userId = null, phone = null, url = null, name = null) {
+            store.inviteMember = async function (teamId, roles, email = null, userId = null, phone = null, url = null, name = null, { allowNoRoles = false } = {}) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
                 }
@@ -4958,6 +5008,19 @@ function initializeTeamsMembers() {
                     // Ensure roles is an array
                     let rolesArray = Array.isArray(roles) ? roles : (roles ? [roles] : []);
 
+                    // With custom roles defined, a role-less invite is refused rather than sent as owner
+                    let hasCustomRoles = false;
+                    if (rolesArray.length === 0) {
+                        const appwriteConfig = await config.getAppwriteConfig();
+                        const teamRoles = this.getUserGeneratedRoles ? await this.getUserGeneratedRoles(teamId) : null;
+                        hasCustomRoles = Object.keys(appwriteConfig?.memberRoles || {}).length > 0
+                            || Object.keys(teamRoles || {}).length > 0;
+                        if (hasCustomRoles && !allowNoRoles) {
+                            this.error = 'Choose at least one role for this invite.';
+                            return { success: false, error: this.error };
+                        }
+                    }
+
                     // Normalize roles for Appwrite (add "owner" if custom roles require it)
                     let normalizedRoles = rolesArray;
                     if (this.normalizeRolesForAppwrite && rolesArray.length > 0) {
@@ -4965,7 +5028,7 @@ function initializeTeamsMembers() {
                     }
 
                     // If no roles provided, use default "owner" role (Appwrite requires at least one role)
-                    if (!normalizedRoles || normalizedRoles.length === 0) {
+                    if ((!normalizedRoles || normalizedRoles.length === 0) && !hasCustomRoles) {
                         normalizedRoles = ['owner'];
                     }
 
@@ -5233,16 +5296,36 @@ function initializeTeamsMembers() {
                     return { success: false, error: 'You must be signed in to update membership' };
                 }
 
-                // Check if user has updateMembers permission (required for updating other members' roles)
-                // Users can always update their own roles
-                const isUpdatingSelf = !!this.user && (this.currentTeamMemberships?.some(
-                    m => m.$id === membershipId && m.userId === this.user.$id
-                ) || (this.currentTeam?.$id === teamId && this._currentMembership?.()?.$id === membershipId));
+                const onCurrentTeam = this.currentTeam?.$id === teamId;
+                let own = null;
+                if (this.user) {
+                    if (onCurrentTeam) {
+                        const mine = this.currentTeamMemberships?.find(m => m.$id === membershipId && m.userId === this.user.$id)
+                            || this._currentMembership?.();
+                        if (mine?.$id === membershipId) own = mine;
+                    } else {
+                        // Permissions are known for the current team only: look the membership up
+                        try {
+                            const found = await this._appwrite.teams.getMembership({ teamId, membershipId });
+                            if (found?.userId === this.user.$id) own = found;
+                        } catch (e) {
+                            return { success: false, error: 'You do not have permission to update member roles' };
+                        }
+                    }
+                }
 
-                if (!isUpdatingSelf) {
-                    // Updating another member - requires permission
-                    if (!this.hasTeamPermission || !await this.hasTeamPermission('updateMembers')) {
+                const canUpdateMembers = !!this.hasTeamPermission && await this.hasTeamPermission('updateMembers');
+                if (!own) {
+                    if (!canUpdateMembers) {
                         return { success: false, error: 'You do not have permission to update member roles' };
+                    }
+                } else if (!canUpdateMembers || !onCurrentTeam) {
+                    // Without updateMembers a member may drop their own roles, never add one
+                    const slug = this.roleSlug || (x => x);
+                    const held = new Set((own.roles || []).map(slug));
+                    const wanted = this.normalizeRolesForAppwrite ? await this.normalizeRolesForAppwrite(roles, teamId) : roles;
+                    if (!Array.isArray(wanted) || wanted.some(role => !held.has(role))) {
+                        return { success: false, error: 'You do not have permission to change your own roles' };
                     }
                 }
 
@@ -5322,6 +5405,11 @@ function initializeTeamsMembers() {
                 if (!this.isAuthenticated) {
                     console.warn('[Manifest Appwrite Auth] acceptInvite: User not authenticated');
                     return { success: false, error: 'You must be signed in to accept an invitation' };
+                }
+
+                if (userId && userId !== this.user?.$id) {
+                    this.error = 'This invite is for a different account.';
+                    return { success: false, error: this.error };
                 }
 
                 this.inProgress = true;
@@ -5675,7 +5763,7 @@ function initializeTeamsConvenience() {
                         ? this.inviteRoles.filter(r => r && typeof r === 'string')
                         : [];
 
-                    // If no roles specified, use empty array (will default to "owner" in inviteMember)
+                    // No roles: refused by inviteMember when custom roles exist, else sent as "owner"
                     const result = await this.inviteMember(this.currentTeam.$id, roles, email);
                     if (result.success) {
                         this.inviteEmail = ''; // Clear inputs
@@ -6523,6 +6611,63 @@ window.ManifestAppwriteAuthAnonymous = {
 
 /* Auth magic links */
 
+// Links requested in this browser sign in at once; any other link asks first
+const MAGIC_REQUESTED_KEY = 'manifest:magic-link:requested';
+const MAGIC_REQUESTED_TTL = 60 * 60 * 1000;
+let pendingMagicSignIn = null;
+
+function magicRequested() {
+    try {
+        const list = JSON.parse(localStorage.getItem(MAGIC_REQUESTED_KEY) || '[]');
+        const now = Date.now();
+        return Array.isArray(list) ? list.filter(e => e && typeof e.u === 'string' && now - e.t < MAGIC_REQUESTED_TTL) : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function writeMagicRequested(list) {
+    try {
+        if (list.length) localStorage.setItem(MAGIC_REQUESTED_KEY, JSON.stringify(list.slice(-5)));
+        else localStorage.removeItem(MAGIC_REQUESTED_KEY);
+    } catch (e) {}
+}
+
+function rememberMagicRequest(userId) {
+    if (!userId || typeof userId !== 'string') return;
+    writeMagicRequested([...magicRequested().filter(e => e.u !== userId), { u: userId, t: Date.now() }]);
+}
+
+function forgetMagicRequest(userId) {
+    writeMagicRequested(magicRequested().filter(e => e.u !== userId));
+}
+
+// Default confirmation; a page with its own UI calls preventDefault() on manifest:auth:signin-confirm
+function showSignInConfirm(store) {
+    if (typeof document.createElement !== 'function' || !document.body) return;
+    const dialog = document.createElement('dialog');
+    if (typeof dialog.showModal !== 'function') return;
+    dialog.setAttribute('data-auth-signin-confirm', '');
+    const title = document.createElement('h2');
+    title.textContent = 'Continue signing in?';
+    const text = document.createElement('p');
+    text.textContent = 'This sign-in link was requested from another browser or device. Only continue if you asked for it.';
+    const actions = document.createElement('footer');
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    const proceed = document.createElement('button');
+    proceed.type = 'button';
+    proceed.textContent = 'Continue';
+    actions.append(cancel, proceed);
+    dialog.append(title, text, actions);
+    cancel.addEventListener('click', () => dialog.close());
+    proceed.addEventListener('click', () => { store.confirmSignIn(); dialog.close(); });
+    dialog.addEventListener('close', () => { store.cancelSignIn(); dialog.remove(); });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+}
+
 // Add magic link methods to auth store
 function initializeMagicLinks() {
     if (typeof Alpine === 'undefined') {
@@ -6589,6 +6734,7 @@ function initializeMagicLinks() {
                     // Try createMagicURLSession first (standard method)
                     if (typeof account.createMagicURLSession === 'function') {
                         const token = await account.createMagicURLSession(magicUserId, email, cleanRedirectUrl);
+                        rememberMagicRequest(token?.userId);
                         this.magicLinkSent = true;
                         this.magicLinkExpired = false;
                         this.error = null;
@@ -6601,6 +6747,7 @@ function initializeMagicLinks() {
                     // Fallback: try createMagicURLToken (alternative method name)
                     if (typeof account.createMagicURLToken === 'function') {
                         const token = await account.createMagicURLToken(magicUserId, email, redirectUrl);
+                        rememberMagicRequest(token?.userId);
                         this.magicLinkSent = true;
                         this.magicLinkExpired = false;
                         this.error = null;
@@ -6728,6 +6875,31 @@ function initializeMagicLinks() {
                 return result;
             };
 
+            // Answer a pending confirmation (link opened outside the browser that requested it)
+            store.confirmSignIn = async function () {
+                const pending = pendingMagicSignIn;
+                pendingMagicSignIn = null;
+                this.signInPending = false;
+                if (!pending) return { success: false, error: 'No sign-in is waiting for confirmation' };
+                const result = await this.handleMagicLinkCallback(pending.userId, pending.secret);
+                if (!result.success) this._guestAfterSignInAnswer();
+                return result;
+            };
+
+            // Guest creation waited on the answer
+            store._guestAfterSignInAnswer = function () {
+                if (!this.isAuthenticated && !this._sessionUnverified && this._guestAuto && this._createAnonymousSession) {
+                    this._createAnonymousSession();
+                }
+            };
+
+            store.cancelSignIn = function () {
+                const wasPending = !!pendingMagicSignIn;
+                pendingMagicSignIn = null;
+                this.signInPending = false;
+                if (wasPending) this._guestAfterSignInAnswer();
+            };
+
             // Handle magic link callback
             store.handleMagicLinkCallback = async function (userId, secret) {
                 if (!this._appwrite) {
@@ -6741,13 +6913,17 @@ function initializeMagicLinks() {
                 this.error = null;
                 this.magicLinkExpired = false;
                 this.magicLinkSent = false;
+                let keepIdentity = false;
 
                 try {
                     const appwriteConfig = await config.getAppwriteConfig();
-                    const upgradingGuest = !!(appwriteConfig?.guestUpgrade && this.isAnonymous);
+                    // An upgrade link is made for the guest's own id; any other account replaces the guest
+                    const upgradingGuest = !!(appwriteConfig?.guestUpgrade && this.isAnonymous && this.user?.$id === userId);
                     // A guest being replaced (not upgraded) by a different account — its
                     // team state must be cleared before loading the new user's teams.
                     const replacingGuest = this.isAnonymous && !upgradingGuest;
+                    // A session this callback does not end keeps its identity if sign-in fails
+                    keepIdentity = this.isAuthenticated && !replacingGuest;
 
                     // Delete the existing anonymous session first — UNLESS we're upgrading
                     // the guest in place. For an upgrade the magic token was created against
@@ -6773,6 +6949,8 @@ function initializeMagicLinks() {
                     } catch (createError) {
                         if (upgradingGuest && createError.message?.includes('prohibited')) {
                             session = await this._appwrite.account.getSession('current');
+                            // Still the guest's session: not upgraded
+                            if (!session || session.provider === 'anonymous') throw createError;
                         } else {
                             throw createError;
                         }
@@ -6784,6 +6962,7 @@ function initializeMagicLinks() {
                     this.magicLinkSent = false;
                     this.magicLinkExpired = false;
                     this.error = null;
+                    forgetMagicRequest(userId);
 
                     // Clear stored callback on success
                     try {
@@ -6823,7 +7002,8 @@ function initializeMagicLinks() {
                     const errorMessage = error.message || '';
                     const errorCode = error.code || error.statusCode || '';
                     const isRateLimit = errorCode === 429 || errorMessage.includes('Rate limit') || errorMessage.includes('429');
-                    const isExpiredOrInvalid = !isRateLimit && errorMessage && (
+                    const sessionExists = keepIdentity && (error.type === 'user_session_already_exists' || errorMessage.includes('prohibited'));
+                    const isExpiredOrInvalid = !isRateLimit && !sessionExists && errorMessage && (
                         errorMessage.includes('expired') ||
                         errorMessage.includes('Invalid token') ||
                         errorMessage.includes('invalid') ||
@@ -6839,8 +7019,10 @@ function initializeMagicLinks() {
                         // rate limit the user must re-request the magic link from
                         // their email (cleanupUrl has already stripped URL params).
                         this.error = 'Rate limit exceeded. Please wait a moment and request a new magic link.';
-                        this.isAuthenticated = false;
-                        this.isAnonymous = false;
+                        if (!keepIdentity) {
+                            this.isAuthenticated = false;
+                            this.isAnonymous = false;
+                        }
                         this.magicLinkExpired = false;
                     } else if (isExpiredOrInvalid) {
                         try {
@@ -6862,8 +7044,10 @@ function initializeMagicLinks() {
                         this.magicLinkSent = false;
                     }
 
-                    this.isAuthenticated = false;
-                    this.isAnonymous = false;
+                    if (!keepIdentity) {
+                        this.isAuthenticated = false;
+                        this.isAnonymous = false;
+                    }
 
                     // Sync state
                     if (this._syncStateToStorage) {
@@ -6969,8 +7153,16 @@ function handleMagicLinkCallbacks() {
         // that any same-origin XSS could read; UX of "refresh to retry on rate
         // limit" isn't worth the credential-exfil risk.
 
-        // Handle the callback
-        await store.handleMagicLinkCallback(callbackInfo.userId, callbackInfo.secret);
+        if (magicRequested().some(e => e.u === callbackInfo.userId)) {
+            await store.handleMagicLinkCallback(callbackInfo.userId, callbackInfo.secret);
+            return;
+        }
+
+        // Not requested here: nothing is consumed and no session ends until the visitor confirms
+        pendingMagicSignIn = { userId: callbackInfo.userId, secret: callbackInfo.secret };
+        store.signInPending = true;
+        const ask = new CustomEvent('manifest:auth:signin-confirm', { cancelable: true });
+        if (window.dispatchEvent(ask)) showSignInConfirm(store);
     });
 }
 
@@ -8290,6 +8482,11 @@ function initializeCallbacks() {
         // and reading stale ones could resurrect a credential that should have
         // been forgotten.
         try { sessionStorage.removeItem('manifest:magic-link:callback'); } catch (e) {}
+
+        // An abandoned OAuth attempt must not vouch for a later link
+        if (!userId || !secret) {
+            try { sessionStorage.removeItem('manifest:oauth:redirect'); } catch (e) {}
+        }
 
         // Check OAuth redirect flag
         const isOAuthCallback = sessionStorage.getItem('manifest:oauth:redirect') === 'true';

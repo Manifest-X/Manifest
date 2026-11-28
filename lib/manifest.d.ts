@@ -965,6 +965,22 @@ declare global {
     /** Camera (device module). */
     const $camera: ManifestCamera;
 
+    /** Publish-time Tailwind engine-skip verdict (`Manifest.tailwindStamp`). */
+    interface ManifestTailwindStamp {
+        /** 'shadow': the engine loads as before and this only records; 'skip': the engine loads only when needed. */
+        mode: 'skip' | 'shadow';
+        seed: string;
+        /** null while deciding; true when seed, tokens and sheet all check out. */
+        accepted: boolean | null;
+        /** Why the stamp was not accepted. */
+        reason: null | 'seed' | 'tokens' | 'author-block' | 'utilities' | 'prerendered' | 'remembered' | 'sheet' | 'error';
+        /** Whether this page load could skip the engine (so far). */
+        wouldSkip: boolean | null;
+        engine: null | 'loaded' | 'skipped';
+        /** The first token (or author block) that needed the engine; at = ms since navigation start. */
+        trigger: null | { token: string | null; reason: 'token' | 'author-block' | 'sheet'; at: number };
+    }
+
     /** Window-level Manifest namespace exposed by the loader. */
     interface Window {
         Manifest?: {
@@ -972,6 +988,8 @@ declare global {
             /** @deprecated Use loadModule. */
             loadPlugin(name: string, version?: string): Promise<unknown>;
             loadTailwind(version?: string): Promise<unknown>;
+            /** Engine-skip stamp verdict for this page (null without a stamped utilities sheet). */
+            readonly tailwindStamp?: ManifestTailwindStamp | null;
             getModuleUrl(name: string, version?: string): string;
             /** @deprecated Use getModuleUrl. */
             getPluginUrl(name: string, version?: string): string;
@@ -1030,14 +1048,12 @@ declare global {
     }
 
     /**
-     * Fired when the utilities runtime sees a class the baked sheet (and
-     * `manifest.json`'s `utilities.safelist`/`patterns`) doesn't cover, after
-     * publish stamped that sheet as covering every class — see
-     * manifest.utilities.static.js. `engineLoaded` is true once the lazily
-     * loaded Tailwind engine has taken over, false if that load failed.
+     * Fired once on a page with an accepted engine-skip stamp, when the first class token the
+     * stamp does not cover appears (`reason: 'token'`), or an author `text/tailwindcss` block
+     * (`reason: 'author-block'`). In skip mode the Tailwind engine then loads.
      */
     interface WindowEventMap {
-        'manifest:utilities-uncovered': CustomEvent<{ classes: string[]; engineLoaded: boolean }>;
+        'manifest:tailwind-engine': CustomEvent<{ token: string | null; reason: 'token' | 'author-block' | 'sheet'; mode: 'skip' | 'shadow' }>;
     }
 }
 

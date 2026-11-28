@@ -58,7 +58,7 @@ describe('real utilities sheet fixtures — classNamesFromCssText', () => {
 
     it('both fixtures are treated as fully covered end-to-end when served as the static sheet', async () => {
         for (const { file, expectedCount } of Object.values(FIXTURES)) {
-            document.head.innerHTML = `<style data-mnfst-utilities data-mnfst-utilities-complete>${readFileSync(join(__dirname, file), 'utf8')}</style>`
+            document.head.innerHTML = `<style data-mnfst-utilities>${readFileSync(join(__dirname, file), 'utf8')}</style>`
             document.body.innerHTML = '<div></div>'
             window.tailwind = {}
             window.ManifestComponentsRegistry = { manifest: {} }

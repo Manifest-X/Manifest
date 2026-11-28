@@ -29,7 +29,7 @@ function initializeTeamsMembers() {
         const store = Alpine.store('auth');
         if (store && !store.inviteMember) {
             // Invite member to team
-            store.inviteMember = async function (teamId, roles, email = null, userId = null, phone = null, url = null, name = null) {
+            store.inviteMember = async function (teamId, roles, email = null, userId = null, phone = null, url = null, name = null, { allowNoRoles = false } = {}) {
                 if (!this._appwrite) {
                     this._appwrite = await config.getAppwriteClient();
                 }
@@ -59,6 +59,19 @@ function initializeTeamsMembers() {
                     // Ensure roles is an array
                     let rolesArray = Array.isArray(roles) ? roles : (roles ? [roles] : []);
 
+                    // With custom roles defined, a role-less invite is refused rather than sent as owner
+                    let hasCustomRoles = false;
+                    if (rolesArray.length === 0) {
+                        const appwriteConfig = await config.getAppwriteConfig();
+                        const teamRoles = this.getUserGeneratedRoles ? await this.getUserGeneratedRoles(teamId) : null;
+                        hasCustomRoles = Object.keys(appwriteConfig?.memberRoles || {}).length > 0
+                            || Object.keys(teamRoles || {}).length > 0;
+                        if (hasCustomRoles && !allowNoRoles) {
+                            this.error = 'Choose at least one role for this invite.';
+                            return { success: false, error: this.error };
+                        }
+                    }
+
                     // Normalize roles for Appwrite (add "owner" if custom roles require it)
                     let normalizedRoles = rolesArray;
                     if (this.normalizeRolesForAppwrite && rolesArray.length > 0) {
@@ -66,7 +79,7 @@ function initializeTeamsMembers() {
                     }
 
                     // If no roles provided, use default "owner" role (Appwrite requires at least one role)
-                    if (!normalizedRoles || normalizedRoles.length === 0) {
+                    if ((!normalizedRoles || normalizedRoles.length === 0) && !hasCustomRoles) {
                         normalizedRoles = ['owner'];
                     }
 
@@ -334,16 +347,36 @@ function initializeTeamsMembers() {
                     return { success: false, error: 'You must be signed in to update membership' };
                 }
 
-                // Check if user has updateMembers permission (required for updating other members' roles)
-                // Users can always update their own roles
-                const isUpdatingSelf = !!this.user && (this.currentTeamMemberships?.some(
-                    m => m.$id === membershipId && m.userId === this.user.$id
-                ) || (this.currentTeam?.$id === teamId && this._currentMembership?.()?.$id === membershipId));
+                const onCurrentTeam = this.currentTeam?.$id === teamId;
+                let own = null;
+                if (this.user) {
+                    if (onCurrentTeam) {
+                        const mine = this.currentTeamMemberships?.find(m => m.$id === membershipId && m.userId === this.user.$id)
+                            || this._currentMembership?.();
+                        if (mine?.$id === membershipId) own = mine;
+                    } else {
+                        // Permissions are known for the current team only: look the membership up
+                        try {
+                            const found = await this._appwrite.teams.getMembership({ teamId, membershipId });
+                            if (found?.userId === this.user.$id) own = found;
+                        } catch (e) {
+                            return { success: false, error: 'You do not have permission to update member roles' };
+                        }
+                    }
+                }
 
-                if (!isUpdatingSelf) {
-                    // Updating another member - requires permission
-                    if (!this.hasTeamPermission || !await this.hasTeamPermission('updateMembers')) {
+                const canUpdateMembers = !!this.hasTeamPermission && await this.hasTeamPermission('updateMembers');
+                if (!own) {
+                    if (!canUpdateMembers) {
                         return { success: false, error: 'You do not have permission to update member roles' };
+                    }
+                } else if (!canUpdateMembers || !onCurrentTeam) {
+                    // Without updateMembers a member may drop their own roles, never add one
+                    const slug = this.roleSlug || (x => x);
+                    const held = new Set((own.roles || []).map(slug));
+                    const wanted = this.normalizeRolesForAppwrite ? await this.normalizeRolesForAppwrite(roles, teamId) : roles;
+                    if (!Array.isArray(wanted) || wanted.some(role => !held.has(role))) {
+                        return { success: false, error: 'You do not have permission to change your own roles' };
                     }
                 }
 
@@ -423,6 +456,11 @@ function initializeTeamsMembers() {
                 if (!this.isAuthenticated) {
                     console.warn('[Manifest Appwrite Auth] acceptInvite: User not authenticated');
                     return { success: false, error: 'You must be signed in to accept an invitation' };
+                }
+
+                if (userId && userId !== this.user?.$id) {
+                    this.error = 'This invite is for a different account.';
+                    return { success: false, error: this.error };
                 }
 
                 this.inProgress = true;

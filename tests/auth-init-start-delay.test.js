@@ -83,6 +83,7 @@ describe('early entry: DOMContentLoaded before alpine:init', () => {
                 alpineInitAfter: 140,
                 cfg: { teams: false },
                 search: '?userId=uA&secret=s3',
+                local: { 'manifest:magic-link:requested': JSON.stringify([{ u: 'uA', t: Date.now() }]) },
                 responder: (name) => {
                     if (name === 'account.get') return signedIn ? { $id: 'uA' } : noSession()
                     if (name === 'account.createSession') { signedIn = true; return { $id: 's1', provider: 'magic-url' } }

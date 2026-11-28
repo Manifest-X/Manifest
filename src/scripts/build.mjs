@@ -7,6 +7,9 @@ import { createHash } from 'crypto';
 import { glob } from 'glob';
 import cssnano from 'cssnano';
 import postcss from 'postcss';
+import { inlineSubscript } from './build.subscript.mjs';
+import { tailwindSeed, TAILWIND_ENGINE_INPUT } from './manifest.tailwind.variants.mjs';
+import { createRequire } from 'module';
 
 // Package version (stamped into the data bundle)
 const BUILD_VERSION = JSON.parse(fs.readFileSync(path.join('..', 'package.json'), 'utf8')).version;
@@ -680,10 +683,8 @@ function handleGroupDependentFiles() {
     console.log('');
 }
 
-// Shared ES modules (.mjs) are inlined as bare declarations
 function readSubscript(filePath) {
-    const content = fs.readFileSync(filePath, 'utf8');
-    return filePath.endsWith('.mjs') ? content.replace(/^export (?=const |function |class )/gm, '') : content;
+    return inlineSubscript(filePath, fs.readFileSync(filePath, 'utf8'));
 }
 
 // Combine subscripts into a single file
@@ -773,13 +774,86 @@ function buildUtilitiesNodeModule() {
         }
     }
 
-    const wrapper = fs.readFileSync(wrapperPath, 'utf8');
+    const wrapper = fs.readFileSync(wrapperPath, 'utf8').replace("const TAILWIND_ENGINE_HASH = '';", `const TAILWIND_ENGINE_HASH = '${TAILWIND_ENGINE_HASH}';`);
+    if (!wrapper.includes(`TAILWIND_ENGINE_HASH = '${TAILWIND_ENGINE_HASH}'`)) throw new Error('node module engine hash marker not found');
     const header = '/* manifest.utilities.node.mjs — built from scripts/utilities/ (DOM-free) */\n\n';
     const combined = `${header}${DOM_SHIMS}\n${core.join('\n\n')}\n\n${wrapper}`;
 
     const outputPath = path.join(MONOLITH_DIR, 'manifest.utilities.node.mjs');
     fs.writeFileSync(outputPath, combined);
     console.log('  ✓ Created manifest.utilities.node.mjs\n');
+}
+
+// Engine-skip gate lists, from the installed tailwindcss (pinned to the bundled engine's version) with Manifest's variants
+async function engineGateLists() {
+    const require = createRequire(import.meta.url);
+    const tw = require('tailwindcss');
+    const installed = require('tailwindcss/package.json').version;
+    if (installed !== TAILWIND_ENGINE_VERSION) throw new Error(`tailwindcss ${installed} != bundled engine ${TAILWIND_ENGINE_VERSION}`);
+    const themeCss = fs.readFileSync(require.resolve('tailwindcss/theme.css'), 'utf8');
+    const utilitiesCss = fs.readFileSync(require.resolve('tailwindcss/utilities.css'), 'utf8');
+    const ds = await tw.__unstable__loadDesignSystem(TAILWIND_ENGINE_INPUT, {
+        base: '/',
+        loadStylesheet: async (id) => ({ base: '/', content: id === 'tailwindcss/theme' ? themeCss : utilitiesCss })
+    });
+    const emits = (list) => ds.candidatesToCss(list).map(Boolean);
+    const isBare = (c) => !/[-:[\/!.]/.test(c);
+
+    // Every bare name the engine could style: bare utility keys (filter: a default, not listed), listed bare classes and their roots
+    const roots = new Set();
+    for (const kind of ['static', 'functional']) for (const k of ds.utilities.keys(kind)) if (isBare(k.replace(/^-/, ''))) roots.add(k.replace(/^-/, ''));
+    for (const [c] of ds.getClassList()) {
+        if (isBare(c)) roots.add(c);
+        const root = c.replace(/^-/, '').split('-')[0];
+        if (root && isBare(root)) roots.add(root);
+    }
+    const rootList = [...roots];
+    const rootEmits = emits(rootList);
+    const bare = rootList.filter((c, i) => rootEmits[i]).sort();
+
+    // First segment of every utility: a name whose first segment is none of these cannot get a rule
+    const utilityRoots = new Set();
+    for (const kind of ['static', 'functional']) for (const k of ds.utilities.keys(kind)) utilityRoots.add(k.replace(/^-/, '').split('-')[0]);
+    const firstSegment = (c) => c.slice(c.lastIndexOf(':') + 1).replace(/^!/, '').replace(/^-/, '').split(/[-/[(]/)[0];
+
+    // Framework classes: selectors in lib/*.css and classes module sources write
+    const names = new Set();
+    const cssDir = path.join('..', 'lib');
+    for (const f of fs.readdirSync(cssDir).filter(f => f.endsWith('.css') && !f.endsWith('.min.css'))) {
+        const css = fs.readFileSync(path.join(cssDir, f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+        for (const m of css.matchAll(/([^{};]+)\{/g)) {
+            if (m[1].trim().startsWith('@')) continue;
+            for (const c of m[1].matchAll(/\.((?:\\.|[\w-])+)/g)) names.add(c[1].replace(/\\(.)/g, '$1'));
+        }
+    }
+    const addList = (text) => { for (const t of text.split(/\s+/)) if (t && !/[${}]/.test(t)) names.add(t); };
+    const sources = glob.sync('scripts/**/*.js', { ignore: ['scripts/tailwind.*.js', 'scripts/**/*.min.js'] });
+    for (const f of sources) {
+        const js = fs.readFileSync(f, 'utf8');
+        for (const m of js.matchAll(/classList\.(?:add|remove|toggle|replace|contains)\(([^)]*)\)/g)) {
+            for (const q of m[1].matchAll(/(['"`])([^'"`]*)\1/g)) addList(q[2]);
+        }
+        for (const m of js.matchAll(/(?:className\s*\+?=\s*|setAttribute\(\s*['"]class['"]\s*,\s*)(['"`])([^'"`]*)\1/g)) addList(m[2]);
+        for (const m of js.matchAll(/\bclass=\\?(["'])([^"'\\]*)\\?\1/g)) addList(m[2]);
+    }
+    const candidates = [...names].filter(c => !isBare(c) && /^[\w-][\w:-]*$/.test(c) && utilityRoots.has(firstSegment(c)));
+    const candidateEmits = emits(candidates);
+    const framework = candidates.filter((c, i) => !candidateEmits[i]).sort();
+    return { bare, roots: [...utilityRoots].sort(), framework };
+}
+
+async function stampEngineGateLists() {
+    console.log('Stamping engine-skip gate lists...');
+    const { bare, roots, framework } = await engineGateLists();
+    const file = path.join(MONOLITH_DIR, 'manifest.utilities.js');
+    const text = fs.readFileSync(file, 'utf8');
+    const stamped = text
+        .replace('const TAILWIND_BARE_UTILITIES = new Set([]);', `const TAILWIND_BARE_UTILITIES = new Set(${JSON.stringify(bare)});`)
+        .replace('const TAILWIND_UTILITY_ROOTS = new Set([]);', `const TAILWIND_UTILITY_ROOTS = new Set(${JSON.stringify(roots)});`)
+        .replace('const FRAMEWORK_CLASSES = new Set([]);', `const FRAMEWORK_CLASSES = new Set(${JSON.stringify(framework)});`);
+    if (stamped === text || stamped.includes('new Set([]);')) throw new Error('engine gate list markers not found in manifest.utilities.js');
+    fs.writeFileSync(file, stamped);
+    console.log(`  ✓ ${bare.length} bare utilities, ${roots.length} utility roots, ${framework.length} framework classes\n`);
 }
 
 // Copy files to lib directory for clean jsdelivr URLs
@@ -970,6 +1044,9 @@ function vendorHashes() {
 // Engine version, from the bundled engine's file name: part of the Tailwind output cache fingerprint
 const TAILWIND_ENGINE_VERSION = (CONFIG.dependencies.TAILWIND_V4_FILE.match(/v(\d+\.\d+\.\d+)/) || [])[1];
 if (!TAILWIND_ENGINE_VERSION) throw new Error('Tailwind engine version not found in TAILWIND_V4_FILE');
+// Engine-skip seed: engine version, its input and the bundled engine file (with Manifest's patches); the node bake carries the same hash
+const TAILWIND_ENGINE_HASH = createHash('sha256').update(fs.readFileSync(path.join('scripts', CONFIG.dependencies.TAILWIND_V4_FILE))).digest('hex').slice(0, 16);
+const TAILWIND_SEED = tailwindSeed(TAILWIND_ENGINE_VERSION, undefined, TAILWIND_ENGINE_HASH);
 
 // manifest.modules.integrity.json: what the loader injects; its hash and the version are stamped
 // into the loader. manifest.integrity.json: every browser file, loader included.
@@ -992,8 +1069,9 @@ async function emitIntegrity() {
     const stamped = loader
         .replace("const LOADER_VERSION = '0.0.0-dev';", `const LOADER_VERSION = '${BUILD_VERSION}';`)
         .replace("const MODULES_INTEGRITY = '';", `const MODULES_INTEGRITY = '${sri(modulesJson)}';`)
-        .replace("const TAILWIND_ENGINE_VERSION = '';", `const TAILWIND_ENGINE_VERSION = '${TAILWIND_ENGINE_VERSION}';`);
-    if (stamped === loader || !stamped.includes(sri(modulesJson)) || !stamped.includes(`TAILWIND_ENGINE_VERSION = '${TAILWIND_ENGINE_VERSION}'`)) throw new Error('loader integrity stamp markers not found');
+        .replace("const TAILWIND_ENGINE_VERSION = '';", `const TAILWIND_ENGINE_VERSION = '${TAILWIND_ENGINE_VERSION}';`)
+        .replace("const TAILWIND_SEED = '';", `const TAILWIND_SEED = '${TAILWIND_SEED}';`);
+    if (stamped === loader || !stamped.includes(sri(modulesJson)) || !stamped.includes(`TAILWIND_ENGINE_VERSION = '${TAILWIND_ENGINE_VERSION}'`) || !stamped.includes(`TAILWIND_SEED = '${TAILWIND_SEED}'`)) throw new Error('loader integrity stamp markers not found');
     fs.writeFileSync(loaderPath, stamped);
     await minifyScript('manifest.js');
 
@@ -1018,6 +1096,9 @@ async function build() {
 
         // Step 2: Build stylesheets
         if (!SCRIPTS_OUT) await buildStylesheets();
+
+        // Step 3: Engine-skip gate lists (after the stylesheets they read)
+        await stampEngineGateLists();
 
         // Step 4: Copy files to lib directory
         copyFilesToDist();

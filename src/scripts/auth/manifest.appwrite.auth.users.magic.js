@@ -1,5 +1,62 @@
 /* Auth magic links */
 
+// Links requested in this browser sign in at once; any other link asks first
+const MAGIC_REQUESTED_KEY = 'manifest:magic-link:requested';
+const MAGIC_REQUESTED_TTL = 60 * 60 * 1000;
+let pendingMagicSignIn = null;
+
+function magicRequested() {
+    try {
+        const list = JSON.parse(localStorage.getItem(MAGIC_REQUESTED_KEY) || '[]');
+        const now = Date.now();
+        return Array.isArray(list) ? list.filter(e => e && typeof e.u === 'string' && now - e.t < MAGIC_REQUESTED_TTL) : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function writeMagicRequested(list) {
+    try {
+        if (list.length) localStorage.setItem(MAGIC_REQUESTED_KEY, JSON.stringify(list.slice(-5)));
+        else localStorage.removeItem(MAGIC_REQUESTED_KEY);
+    } catch (e) {}
+}
+
+function rememberMagicRequest(userId) {
+    if (!userId || typeof userId !== 'string') return;
+    writeMagicRequested([...magicRequested().filter(e => e.u !== userId), { u: userId, t: Date.now() }]);
+}
+
+function forgetMagicRequest(userId) {
+    writeMagicRequested(magicRequested().filter(e => e.u !== userId));
+}
+
+// Default confirmation; a page with its own UI calls preventDefault() on manifest:auth:signin-confirm
+function showSignInConfirm(store) {
+    if (typeof document.createElement !== 'function' || !document.body) return;
+    const dialog = document.createElement('dialog');
+    if (typeof dialog.showModal !== 'function') return;
+    dialog.setAttribute('data-auth-signin-confirm', '');
+    const title = document.createElement('h2');
+    title.textContent = 'Continue signing in?';
+    const text = document.createElement('p');
+    text.textContent = 'This sign-in link was requested from another browser or device. Only continue if you asked for it.';
+    const actions = document.createElement('footer');
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    const proceed = document.createElement('button');
+    proceed.type = 'button';
+    proceed.textContent = 'Continue';
+    actions.append(cancel, proceed);
+    dialog.append(title, text, actions);
+    cancel.addEventListener('click', () => dialog.close());
+    proceed.addEventListener('click', () => { store.confirmSignIn(); dialog.close(); });
+    dialog.addEventListener('close', () => { store.cancelSignIn(); dialog.remove(); });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+}
+
 // Add magic link methods to auth store
 function initializeMagicLinks() {
     if (typeof Alpine === 'undefined') {
@@ -66,6 +123,7 @@ function initializeMagicLinks() {
                     // Try createMagicURLSession first (standard method)
                     if (typeof account.createMagicURLSession === 'function') {
                         const token = await account.createMagicURLSession(magicUserId, email, cleanRedirectUrl);
+                        rememberMagicRequest(token?.userId);
                         this.magicLinkSent = true;
                         this.magicLinkExpired = false;
                         this.error = null;
@@ -78,6 +136,7 @@ function initializeMagicLinks() {
                     // Fallback: try createMagicURLToken (alternative method name)
                     if (typeof account.createMagicURLToken === 'function') {
                         const token = await account.createMagicURLToken(magicUserId, email, redirectUrl);
+                        rememberMagicRequest(token?.userId);
                         this.magicLinkSent = true;
                         this.magicLinkExpired = false;
                         this.error = null;
@@ -205,6 +264,31 @@ function initializeMagicLinks() {
                 return result;
             };
 
+            // Answer a pending confirmation (link opened outside the browser that requested it)
+            store.confirmSignIn = async function () {
+                const pending = pendingMagicSignIn;
+                pendingMagicSignIn = null;
+                this.signInPending = false;
+                if (!pending) return { success: false, error: 'No sign-in is waiting for confirmation' };
+                const result = await this.handleMagicLinkCallback(pending.userId, pending.secret);
+                if (!result.success) this._guestAfterSignInAnswer();
+                return result;
+            };
+
+            // Guest creation waited on the answer
+            store._guestAfterSignInAnswer = function () {
+                if (!this.isAuthenticated && !this._sessionUnverified && this._guestAuto && this._createAnonymousSession) {
+                    this._createAnonymousSession();
+                }
+            };
+
+            store.cancelSignIn = function () {
+                const wasPending = !!pendingMagicSignIn;
+                pendingMagicSignIn = null;
+                this.signInPending = false;
+                if (wasPending) this._guestAfterSignInAnswer();
+            };
+
             // Handle magic link callback
             store.handleMagicLinkCallback = async function (userId, secret) {
                 if (!this._appwrite) {
@@ -218,13 +302,17 @@ function initializeMagicLinks() {
                 this.error = null;
                 this.magicLinkExpired = false;
                 this.magicLinkSent = false;
+                let keepIdentity = false;
 
                 try {
                     const appwriteConfig = await config.getAppwriteConfig();
-                    const upgradingGuest = !!(appwriteConfig?.guestUpgrade && this.isAnonymous);
+                    // An upgrade link is made for the guest's own id; any other account replaces the guest
+                    const upgradingGuest = !!(appwriteConfig?.guestUpgrade && this.isAnonymous && this.user?.$id === userId);
                     // A guest being replaced (not upgraded) by a different account — its
                     // team state must be cleared before loading the new user's teams.
                     const replacingGuest = this.isAnonymous && !upgradingGuest;
+                    // A session this callback does not end keeps its identity if sign-in fails
+                    keepIdentity = this.isAuthenticated && !replacingGuest;
 
                     // Delete the existing anonymous session first — UNLESS we're upgrading
                     // the guest in place. For an upgrade the magic token was created against
@@ -250,6 +338,8 @@ function initializeMagicLinks() {
                     } catch (createError) {
                         if (upgradingGuest && createError.message?.includes('prohibited')) {
                             session = await this._appwrite.account.getSession('current');
+                            // Still the guest's session: not upgraded
+                            if (!session || session.provider === 'anonymous') throw createError;
                         } else {
                             throw createError;
                         }
@@ -261,6 +351,7 @@ function initializeMagicLinks() {
                     this.magicLinkSent = false;
                     this.magicLinkExpired = false;
                     this.error = null;
+                    forgetMagicRequest(userId);
 
                     // Clear stored callback on success
                     try {
@@ -300,7 +391,8 @@ function initializeMagicLinks() {
                     const errorMessage = error.message || '';
                     const errorCode = error.code || error.statusCode || '';
                     const isRateLimit = errorCode === 429 || errorMessage.includes('Rate limit') || errorMessage.includes('429');
-                    const isExpiredOrInvalid = !isRateLimit && errorMessage && (
+                    const sessionExists = keepIdentity && (error.type === 'user_session_already_exists' || errorMessage.includes('prohibited'));
+                    const isExpiredOrInvalid = !isRateLimit && !sessionExists && errorMessage && (
                         errorMessage.includes('expired') ||
                         errorMessage.includes('Invalid token') ||
                         errorMessage.includes('invalid') ||
@@ -316,8 +408,10 @@ function initializeMagicLinks() {
                         // rate limit the user must re-request the magic link from
                         // their email (cleanupUrl has already stripped URL params).
                         this.error = 'Rate limit exceeded. Please wait a moment and request a new magic link.';
-                        this.isAuthenticated = false;
-                        this.isAnonymous = false;
+                        if (!keepIdentity) {
+                            this.isAuthenticated = false;
+                            this.isAnonymous = false;
+                        }
                         this.magicLinkExpired = false;
                     } else if (isExpiredOrInvalid) {
                         try {
@@ -339,8 +433,10 @@ function initializeMagicLinks() {
                         this.magicLinkSent = false;
                     }
 
-                    this.isAuthenticated = false;
-                    this.isAnonymous = false;
+                    if (!keepIdentity) {
+                        this.isAuthenticated = false;
+                        this.isAnonymous = false;
+                    }
 
                     // Sync state
                     if (this._syncStateToStorage) {
@@ -446,8 +542,16 @@ function handleMagicLinkCallbacks() {
         // that any same-origin XSS could read; UX of "refresh to retry on rate
         // limit" isn't worth the credential-exfil risk.
 
-        // Handle the callback
-        await store.handleMagicLinkCallback(callbackInfo.userId, callbackInfo.secret);
+        if (magicRequested().some(e => e.u === callbackInfo.userId)) {
+            await store.handleMagicLinkCallback(callbackInfo.userId, callbackInfo.secret);
+            return;
+        }
+
+        // Not requested here: nothing is consumed and no session ends until the visitor confirms
+        pendingMagicSignIn = { userId: callbackInfo.userId, secret: callbackInfo.secret };
+        store.signInPending = true;
+        const ask = new CustomEvent('manifest:auth:signin-confirm', { cancelable: true });
+        if (window.dispatchEvent(ask)) showSignInConfirm(store);
     });
 }
 
