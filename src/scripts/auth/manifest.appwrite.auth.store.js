@@ -188,6 +188,7 @@ function initializeAuthStore() {
         error: null,
         magicLinkSent: false,
         magicLinkExpired: false,
+        signInPending: false, // A sign-in link opened outside the browser that requested it awaits confirmation
         otpSent: false, // OTP (email/phone): a code has been sent and is awaiting entry
         otpExpired: false, // OTP (email/phone): the entered code was wrong/expired
         otpPhrase: null, // Email OTP: security phrase to display (when enabled; phone has none)

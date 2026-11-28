@@ -347,16 +347,23 @@ function initializeTeamsMembers() {
                     return { success: false, error: 'You must be signed in to update membership' };
                 }
 
-                // Check if user has updateMembers permission (required for updating other members' roles)
-                // Users can always update their own roles
                 const isUpdatingSelf = !!this.user && (this.currentTeamMemberships?.some(
                     m => m.$id === membershipId && m.userId === this.user.$id
                 ) || (this.currentTeam?.$id === teamId && this._currentMembership?.()?.$id === membershipId));
 
+                const canUpdateMembers = !!this.hasTeamPermission && await this.hasTeamPermission('updateMembers');
                 if (!isUpdatingSelf) {
-                    // Updating another member - requires permission
-                    if (!this.hasTeamPermission || !await this.hasTeamPermission('updateMembers')) {
+                    if (!canUpdateMembers) {
                         return { success: false, error: 'You do not have permission to update member roles' };
+                    }
+                } else if (!canUpdateMembers) {
+                    // Without updateMembers a member may drop their own roles, never add one
+                    const own = this.currentTeamMemberships?.find(m => m.$id === membershipId) || this._currentMembership?.();
+                    const slug = this.roleSlug || (x => x);
+                    const held = new Set((own?.roles || []).map(slug));
+                    const wanted = this.normalizeRolesForAppwrite ? await this.normalizeRolesForAppwrite(roles, teamId) : roles;
+                    if (!Array.isArray(wanted) || wanted.some(role => !held.has(role))) {
+                        return { success: false, error: 'You do not have permission to change your own roles' };
                     }
                 }
 

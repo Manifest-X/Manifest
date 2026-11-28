@@ -17,6 +17,8 @@ const invalid = () => { const e = new Error('Invalid token passed in the request
 function start({ cfg, persisted, search = '?userId=u1&secret=s1', account = {} }) {
     const p = boot({
         cfg: { teams: false, magic: true, ...cfg }, persisted, search,
+        // The link was requested in this browser
+        local: { 'manifest:magic-link:requested': JSON.stringify([{ u: 'u1', t: Date.now() }]) },
         responder: (name, arg) => {
             if (account[name]) return account[name](arg)
             if (name === 'account.listSessions') return { sessions: [{ $id: 'sV', current: true, provider: 'email' }] }

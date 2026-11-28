@@ -1,5 +1,62 @@
 /* Auth magic links */
 
+// Links requested in this browser sign in at once; any other link asks first
+const MAGIC_REQUESTED_KEY = 'manifest:magic-link:requested';
+const MAGIC_REQUESTED_TTL = 60 * 60 * 1000;
+let pendingMagicSignIn = null;
+
+function magicRequested() {
+    try {
+        const list = JSON.parse(localStorage.getItem(MAGIC_REQUESTED_KEY) || '[]');
+        const now = Date.now();
+        return Array.isArray(list) ? list.filter(e => e && typeof e.u === 'string' && now - e.t < MAGIC_REQUESTED_TTL) : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function writeMagicRequested(list) {
+    try {
+        if (list.length) localStorage.setItem(MAGIC_REQUESTED_KEY, JSON.stringify(list.slice(-5)));
+        else localStorage.removeItem(MAGIC_REQUESTED_KEY);
+    } catch (e) {}
+}
+
+function rememberMagicRequest(userId) {
+    if (!userId || typeof userId !== 'string') return;
+    writeMagicRequested([...magicRequested().filter(e => e.u !== userId), { u: userId, t: Date.now() }]);
+}
+
+function forgetMagicRequest(userId) {
+    writeMagicRequested(magicRequested().filter(e => e.u !== userId));
+}
+
+// Default confirmation; a page with its own UI calls preventDefault() on manifest:auth:signin-confirm
+function showSignInConfirm(store) {
+    if (typeof document.createElement !== 'function' || !document.body) return;
+    const dialog = document.createElement('dialog');
+    if (typeof dialog.showModal !== 'function') return;
+    dialog.setAttribute('data-auth-signin-confirm', '');
+    const title = document.createElement('h2');
+    title.textContent = 'Continue signing in?';
+    const text = document.createElement('p');
+    text.textContent = 'This sign-in link was requested from another browser or device. Only continue if you asked for it.';
+    const actions = document.createElement('footer');
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    const proceed = document.createElement('button');
+    proceed.type = 'button';
+    proceed.textContent = 'Continue';
+    actions.append(cancel, proceed);
+    dialog.append(title, text, actions);
+    cancel.addEventListener('click', () => dialog.close());
+    proceed.addEventListener('click', () => { store.confirmSignIn(); dialog.close(); });
+    dialog.addEventListener('close', () => { store.cancelSignIn(); dialog.remove(); });
+    document.body.appendChild(dialog);
+    dialog.showModal();
+}
+
 // Add magic link methods to auth store
 function initializeMagicLinks() {
     if (typeof Alpine === 'undefined') {
@@ -66,6 +123,7 @@ function initializeMagicLinks() {
                     // Try createMagicURLSession first (standard method)
                     if (typeof account.createMagicURLSession === 'function') {
                         const token = await account.createMagicURLSession(magicUserId, email, cleanRedirectUrl);
+                        rememberMagicRequest(token?.userId);
                         this.magicLinkSent = true;
                         this.magicLinkExpired = false;
                         this.error = null;
@@ -78,6 +136,7 @@ function initializeMagicLinks() {
                     // Fallback: try createMagicURLToken (alternative method name)
                     if (typeof account.createMagicURLToken === 'function') {
                         const token = await account.createMagicURLToken(magicUserId, email, redirectUrl);
+                        rememberMagicRequest(token?.userId);
                         this.magicLinkSent = true;
                         this.magicLinkExpired = false;
                         this.error = null;
@@ -205,6 +264,20 @@ function initializeMagicLinks() {
                 return result;
             };
 
+            // Answer a pending confirmation (link opened outside the browser that requested it)
+            store.confirmSignIn = async function () {
+                const pending = pendingMagicSignIn;
+                pendingMagicSignIn = null;
+                this.signInPending = false;
+                if (!pending) return { success: false, error: 'No sign-in is waiting for confirmation' };
+                return this.handleMagicLinkCallback(pending.userId, pending.secret);
+            };
+
+            store.cancelSignIn = function () {
+                pendingMagicSignIn = null;
+                this.signInPending = false;
+            };
+
             // Handle magic link callback
             store.handleMagicLinkCallback = async function (userId, secret) {
                 if (!this._appwrite) {
@@ -266,6 +339,7 @@ function initializeMagicLinks() {
                     this.magicLinkSent = false;
                     this.magicLinkExpired = false;
                     this.error = null;
+                    forgetMagicRequest(userId);
 
                     // Clear stored callback on success
                     try {
@@ -456,8 +530,16 @@ function handleMagicLinkCallbacks() {
         // that any same-origin XSS could read; UX of "refresh to retry on rate
         // limit" isn't worth the credential-exfil risk.
 
-        // Handle the callback
-        await store.handleMagicLinkCallback(callbackInfo.userId, callbackInfo.secret);
+        if (magicRequested().some(e => e.u === callbackInfo.userId)) {
+            await store.handleMagicLinkCallback(callbackInfo.userId, callbackInfo.secret);
+            return;
+        }
+
+        // Not requested here: nothing is consumed and no session ends until the visitor confirms
+        pendingMagicSignIn = { userId: callbackInfo.userId, secret: callbackInfo.secret };
+        store.signInPending = true;
+        const ask = new CustomEvent('manifest:auth:signin-confirm', { cancelable: true });
+        if (window.dispatchEvent(ask)) showSignInConfirm(store);
     });
 }
 
