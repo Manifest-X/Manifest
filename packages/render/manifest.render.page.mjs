@@ -1039,7 +1039,7 @@ function stripPrerenderedXDataDirectives(html) {
     if (expr.includes('$search') || expr.includes('$query')) return false;
     return scopeIdentifiers(expr).length === 0;
   }
-  return html.replace(/<(\w+)([^>]*)>/g, (full, tag, attrs) => {
+  return html.replace(/<([a-zA-Z][\w-]*)([^>]*)>/g, (full, tag, attrs) => {
     if (isHydrateMarkedAttrs(attrs)) return full;
     let outAttrs = attrs;
     outAttrs = outAttrs.replace(/\s+x-text="([^"]*\$x[^"]*)"/g, (match, expr) => (isStatic(expr) ? '' : match));
@@ -1055,7 +1055,7 @@ function stripPrerenderedXDataDirectives(html) {
 //    Use (?<!:) so we only strip literal attr=, not :attr= (e.g. class= not :class=).
 //    Never touch <script> tags (loader + injected plugins must be preserved; static HTML still runs them).
 function stripPrerenderDynamicBindings(html) {
-  return html.replace(/<(\w+)([^>]*)>/g, (match, tagName, attrsStr) => {
+  return html.replace(/<([a-zA-Z][\w-]*)([^>]*)>/g, (match, tagName, attrsStr) => {
     if (tagName.toLowerCase() === 'script') return match;
     if (isHydrateMarkedAttrs(attrsStr)) return match;
     const isAnchor = tagName.toLowerCase() === 'a';
@@ -1171,7 +1171,7 @@ function markPrerenderedManifestComponents(html) {
 // Remove empty inline mask-image styles emitted before data resolves
 // (e.g. style="mask-image: url()"), while keeping any :style/x-bind:style bindings.
 function stripEmptyInlineMaskStyles(html) {
-  return html.replace(/<(\w+)([^>]*)>/g, (full, tag, attrs) => {
+  return html.replace(/<([a-zA-Z][\w-]*)([^>]*)>/g, (full, tag, attrs) => {
     const styleMatch = attrs.match(/\sstyle=(["'])([\s\S]*?)\1/i);
     if (!styleMatch) return full;
     const quote = styleMatch[1];
