@@ -1855,40 +1855,92 @@ function routeConditionsMatch(routeCondition, normalizedPath, matches) {
 		return logical === '/' ? '/' : logical.replace(/^\/|\/$/g, '');
 	}
 
-	// Surely off-route: no reading of a leading locale segment (code or not) matches
+	// Surely off-route: no reading of a leading locale segment (code or not) matches; '!*' waits for the router
 	function routeSurelyHidden(condition, path) {
+		if (condition.split(',').some(cond => cond.trim() === '!*')) return true;
 		const first = path.split('/').filter(Boolean)[0];
 		const readings = first && /^[a-z]{2}(-[A-Z]{2})?$/.test(first) ? [[], [first]] : [[]];
 		return readings.every(codes => routeConditionsMatch(condition, path, (p, c) => routePathMatches(p, c, codes)) === false);
 	}
 
-	// Cloak routes that surely don't match (and x-show ones) as the parser adds them; the matching route paints
-	function cloakRoutesWhileParsing() {
-		if (document.readyState !== 'loading' || typeof MutationObserver === 'undefined') return;
+	// Panels hidden at parse until the tabs module converts them; shown again if it never loads
+	const parseHiddenPanels = [];
+	function revealParseHiddenPanels() {
+		if (window.ensureTabsPluginInitialized) return;
+		for (const el of parseHiddenPanels.splice(0)) if (el.__manifestTabHidden && el.style.display === 'none' && !el.hasAttribute('x-show')) el.style.removeProperty('display');
+	}
+
+	// As the parser adds them, hide what Alpine or a module will hide, so nothing paints before it does:
+	// x-show and :hidden elements and tab panels other than each group's default (cloak, or display for panels),
+	// and with the router, routes that surely don't match and x-show routes; the matching route paints
+	function cloakWhileParsing({ routes, tabs }) {
+		if (document.readyState !== 'loading' || typeof MutationObserver === 'undefined' || window.__manifestRender === true) return;
 		let path;
+		const tabGroups = new Map();
+		const seen = new WeakSet();
+		const alpineHides = (el) => {
+			for (const attr of el.attributes) {
+				const n = attr.name;
+				if (n === 'x-show' || n.startsWith('x-show.') || n === ':hidden' || n === 'x-bind:hidden') return true;
+			}
+			return false;
+		};
+		// The tabs module shows the panels matching each group's first panel (id, else first class) unless an x-data sets the group's tab
+		const inactivePanel = (el) => {
+			const ident = el.id || (el.className ? el.className.split(' ')[0] : '');
+			if (!ident) return false;
+			const group = el.getAttribute('x-tabpanel') || '';
+			if (!tabGroups.has(group)) {
+				const prop = group ? 'tab_' + group.replace(/[^a-zA-Z0-9_$]/g, '_') : 'tab';
+				const set = new RegExp('(^|[{,\\s])' + prop.replace(/\$/g, '\\$') + '\\s*:');
+				let authored = false;
+				for (let scope = el.closest('[x-data]'); scope && !authored; scope = scope.parentElement?.closest('[x-data]')) authored = set.test(scope.getAttribute('x-data'));
+				tabGroups.set(group, authored ? null : ident);
+			}
+			return tabGroups.get(group) !== ident;
+		};
 		const visit = (el) => {
-			if (el.hasAttribute('x-cloak')) return;
-			const condition = el.getAttribute('x-route');
-			let show = false;
-			for (const attr of el.attributes) if (attr.name === 'x-show' || attr.name.startsWith('x-show.')) show = true;
-			if (!show && !(condition && routeSurelyHidden(condition, path))) return;
-			el.setAttribute('x-cloak', '');
-			el.__manifestRouteCloak = true;
+			const condition = routes && path !== null ? el.getAttribute('x-route') : null;
+			const panel = tabs && el.hasAttribute('x-tabpanel');
+			const hides = alpineHides(el);
+			if (condition === null && !panel && !hides) return;
+			if (seen.has(el)) return;
+			seen.add(el);
+			if (el.hasAttribute('x-cloak') || el.closest('[x-ignore]')) return;
+			if (condition && routeSurelyHidden(condition, path)) {
+				el.setAttribute('x-cloak', '');
+				el.__manifestRouteCloak = true;
+				return;
+			}
+			if (panel) {
+				if (inactivePanel(el) && !el.style.display) {
+					el.style.display = 'none';
+					el.__manifestTabHidden = true;
+					parseHiddenPanels.push(el);
+				}
+				return;
+			}
+			if (hides && el.closest('[x-data]')) {
+				el.setAttribute('x-cloak', '');
+				if (condition !== null) el.__manifestRouteCloak = true;
+			}
 		};
 		const observer = new MutationObserver((records) => {
-			if (path === undefined && document.body) path = parsePagePath();
-			if (path === null) return observer.disconnect();
+			if (path === undefined && document.body) {
+				if (document.querySelector('meta[name="manifest:prerendered"][content="1"]')) return observer.disconnect();
+				path = routes ? parsePagePath() : null;
+			}
 			if (path === undefined) return;
 			for (const record of records) {
-				for (const node of record.addedNodes) {
-					if (node.nodeType !== 1) continue;
-					if (node.hasAttribute('x-route')) visit(node);
-					if (node.firstElementChild) node.querySelectorAll('[x-route]').forEach(visit);
-				}
+				for (const node of record.addedNodes) if (node.nodeType === 1) visit(node);
 			}
 		});
 		observer.observe(document.documentElement, { childList: true, subtree: true });
-		document.addEventListener('DOMContentLoaded', () => observer.disconnect(), { once: true });
+		// Parser-added elements each arrive alone; a sweep at the end catches markup a script inserted whole
+		document.addEventListener('DOMContentLoaded', () => {
+			observer.disconnect();
+			if (path !== undefined) document.querySelectorAll('[x-route], [x-show], [x-tabpanel], [\\:hidden], [x-bind\\:hidden]').forEach(visit);
+		}, { once: true });
 	}
 
 	// Parse config and load plugins
@@ -1913,7 +1965,7 @@ function routeConditionsMatch(routeCondition, normalizedPath, matches) {
 			return;
 		}
 		window.__manifestLoaderStarted = true;
-		if (config.plugins.includes('router')) cloakRoutesWhileParsing();
+		cloakWhileParsing({ routes: config.plugins.includes('router'), tabs: config.plugins.includes('tabs') });
 		if (config.deriveFromManifest) { let resolve; usageGate = { promise: new Promise(r => { resolve = r; }), resolve }; }
 
 		const MANIFEST_DEPENDENT_PLUGINS = [
@@ -2108,6 +2160,7 @@ function routeConditionsMatch(routeCondition, normalizedPath, matches) {
 				resolve(Promise.all(late));
 			}));
 			await Promise.all(pluginPromises);
+			revealParseHiddenPanels();
 			settleTailwindCache(config.version);
 			if (manifestPromise) {
 				manifest = await manifestPromise;

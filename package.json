@@ -63,6 +63,7 @@
         "test:e2e:route-head": "node tests/e2e/route-head.e2e.mjs",
         "test:e2e:route-display": "node tests/e2e/components-route-display.e2e.mjs",
         "test:e2e:route-flash": "node tests/e2e/route-flash.e2e.mjs",
+        "test:e2e:no-flash": "node tests/e2e/no-flash.e2e.mjs",
         "test:e2e:localization-fetch": "node tests/e2e/localization-fetch.e2e.mjs",
         "test:e2e:components-parse-once": "node tests/e2e/components-parse-once.e2e.mjs",
         "test:e2e:prerender-patch": "node tests/e2e/utilities-prerender-patch.e2e.mjs",
