@@ -69,6 +69,7 @@ const PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
   <section id="xbo"><template x-for="p in $x.posts"><x-camel x-bind="{ myTitle: p.title }"></x-camel></template></section>
   <section id="xbl"><template x-for="p in $x.posts"><x-card x-bind="{ title: p.title, list: p.list }"></x-card></template></section>
   <section id="nest"><template x-for="p in $x.posts"><x-outer :title="p.title" :list="p.list" :icon="p.icon"></x-outer></template></section>
+  <section id="sty"><div x-data="{ c: 'red' }"><x-camel my-title="S" style="margin-top: 7px" :style="{ color: c }"></x-camel></div></section>
   <section id="bp"><div x-data="{ post: { title: 'Plain' } }"><x-card :title="post.title"></x-card></div></section>
 </body></html>`
 
@@ -111,7 +112,7 @@ const snapshot = (pg) => pg.evaluate(() => {
         flag: !!c.querySelector('.flag') && getComputedStyle(c.querySelector('.flag')).display !== 'none',
         good: c.classList.contains('good')
     }))
-    return { hits: window.__hits, ds: cards('ds'), xd: cards('xd'), st: cards('st'), bx: cards('bx'), bp: cards('bp'), camel: cards('camel'), xbo: cards('xbo'), xbl: cards('xbl'), nest: cards('nest') }
+    return { hits: window.__hits, ds: cards('ds'), xd: cards('xd'), st: cards('st'), bx: cards('bx'), bp: cards('bp'), camel: cards('camel'), xbo: cards('xbo'), xbl: cards('xbl'), nest: cards('nest'), sty: (() => { const a = document.querySelector('#sty article'); return a ? { mt: a.style.marginTop, color: a.style.color } : null })() }
 })
 
 async function live(browser, label, url) {
@@ -137,6 +138,7 @@ async function live(browser, label, url) {
     check(`${label}: static props still work`, s.st[0]?.title === 'Static' && s.st[0].items.join() === 's1,s2,s3' && s.st[0].flag, JSON.stringify(s.st))
     check(`${label}: bound $x prop outside x-for`, s.bx[0]?.title === 'From site', JSON.stringify(s.bx))
     check(`${label}: bound scope prop outside x-for`, s.bp[0]?.title === 'Plain', JSON.stringify(s.bp))
+    check(`${label}: static style kept next to :style`, s.sty?.mt === '7px' && s.sty?.color === 'red', JSON.stringify(s.sty))
     await pg.close()
     return errors
 }

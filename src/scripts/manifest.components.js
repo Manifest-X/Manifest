@@ -507,7 +507,7 @@ window.ManifestComponentsProcessor = {
         topLevelElements.forEach(rootElement => {
             Array.from(element.attributes).forEach(attr => {
                 // Binding output is re-created by the copied directive
-                if (attr.name !== 'class' && isWritten(attr.name)) return;
+                if (attr.name !== 'class' && attr.name !== 'style' && isWritten(attr.name)) return;
                 if (attr.name === 'class') {
                     const existingClass = rootElement.getAttribute('class') || '';
                     const newClasses = `${existingClass} ${attr.value}`.trim();
@@ -537,7 +537,7 @@ window.ManifestComponentsProcessor = {
         if (topLevelElements.length > 0) {
             const firstRoot = topLevelElements[0];
             Array.from(element.attributes).forEach(attr => {
-                if (attr.name === 'class' || isWritten(attr.name)) {
+                if (attr.name === 'class' || attr.name === 'style' || isWritten(attr.name)) {
                     return;
                 }
 
