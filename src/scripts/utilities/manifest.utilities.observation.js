@@ -30,6 +30,7 @@ TailwindCompiler.prototype.setupComponentLoadListener = function () {
                 for (const node of mutation.addedNodes) {
                     // Tailwind cache's engine carrier: not page content
                     if (node.nodeType !== Node.ELEMENT_NODE || node.hasAttribute('data-tailwind-seed')) continue;
+                    if (this._engineGate) this.checkEngineNode(node);
                     const isIgnoredElement = this.ignoredElementSelectors.some(selector =>
                         node.tagName?.toLowerCase() === selector.toLowerCase() ||
                         node.closest(selector)
@@ -102,6 +103,7 @@ TailwindCompiler.prototype.recordClasses = function (list, quiet) {
         }
         if (this.ignoredClassPatterns.some(pattern => pattern.test(cls))) continue;
         this.dynamicClassCache.add(cls);
+        if (this._engineGate) this.checkEngineToken(cls);
         if (quiet) this.quietClasses.add(cls); else fresh = true;
     }
     return fresh;

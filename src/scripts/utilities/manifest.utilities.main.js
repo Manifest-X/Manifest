@@ -131,14 +131,13 @@ class TailwindCompiler {
         // compile — those classes are skipped rather than regenerated. Fails
         // open (never "everything covered") until this resolves — compile()'s
         // first run awaits it, capped at 2s (see static.js). Once settled,
-        // arm the uncovered-class watcher (a no-op unless the loader actually
-        // skipped fetching the Tailwind engine for this page).
+        // arm the engine-skip gate (a no-op without an accepted stamp).
         this.staticUtilitiesCoveredClasses = null;
         this.staticUtilitiesReady = Promise.all([
             this.detectStaticUtilitiesSheet(),
             this.loadUtilitiesSafelist()
         ]);
-        this.staticUtilitiesReady.then(() => this.setupUncoveredClassWatcher());
+        this.staticUtilitiesReady.then(() => this.armEngineGate());
 
         // Add critical styles IMMEDIATELY - don't wait for anything
         this.addCriticalBlockingStylesSync();

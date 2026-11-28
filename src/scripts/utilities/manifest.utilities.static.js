@@ -370,92 +370,89 @@ TailwindCompiler.prototype.stripCoveredRulesFromCss = function (cssText) {
     return strip(cssText);
 };
 
-// Runtime safety net for the loader's Tailwind-engine skip (manifest.js
-// staticUtilitiesFullyCovered): true only when this page (a) asked for the
-// Tailwind engine at all (`data-tailwind`), and (b) publish stamped the
-// static utilities sheet complete, so the loader chose not to fetch it
-// eagerly. Checked against the fuller link-or-style read
-// (findStaticUtilitiesElement) rather than manifest.js's synchronous
-// style-only check — this runs well after boot, so it isn't limited by that
-// decision's timing constraint.
-TailwindCompiler.prototype.tailwindEngineWasSkipped = function () {
-    try {
-        if (!document.querySelector('script[src*="manifest.js"][data-tailwind]')) return false;
-        const el = this.findStaticUtilitiesElement();
-        return !!(el && el.hasAttribute('data-mnfst-utilities-complete'));
-    } catch (e) {
-        return false;
+// Engine-skip gate (loader: decideTailwindStamp). Armed once the loader accepts the stamp and the sheet is read;
+// after that each token is checked where it is first recorded. utilities.patterns never excuse a token here.
+// Stamped by build.mjs from the bundled engine's design system: its bare utilities (flex, hidden, …), the first
+// segment of every utility it has (bg, inset, pointer, …), and the framework classes under those that it emits no rule for
+const TAILWIND_BARE_UTILITIES = new Set([]);
+const TAILWIND_UTILITY_ROOTS = new Set([]);
+const FRAMEWORK_CLASSES = new Set([]);
+const AUTHOR_TAILWIND_SELECTOR = 'style[type="text/tailwindcss"]:not(#manifest-tailwind-variants)';
+
+// Whether the engine could read this token as a candidate: groups and quotes inside them balanced, no markup or code outside them, no dangling dash
+function engineCandidate(cls) {
+    let depth = 0, outside = '', quote = '';
+    for (let i = 0; i < cls.length; i++) {
+        const ch = cls[i];
+        if (quote) {
+            if (ch === '\\') i++;
+            else if (ch === quote) quote = '';
+        } else if (depth && (ch === "'" || ch === '"')) quote = ch;
+        else if (ch === '[' || ch === '(') depth++;
+        else if (ch === ']' || ch === ')') { if (--depth < 0) return false; }
+        else if (!depth) outside += ch;
     }
+    return !quote && depth === 0 && !/[='"`<>{};,\\$]/.test(outside) && !cls.endsWith('-');
+}
+
+// The utility after the last variant, without important or negative marks
+function utilityPart(cls) {
+    let depth = 0, start = 0, quote = '';
+    for (let i = 0; i < cls.length; i++) {
+        const ch = cls[i];
+        if (quote) {
+            if (ch === '\\') i++;
+            else if (ch === quote) quote = '';
+        } else if (depth && (ch === "'" || ch === '"')) quote = ch;
+        else if (ch === '[' || ch === '(') depth++;
+        else if (ch === ']' || ch === ')') depth--;
+        else if (ch === ':' && !depth) start = i + 1;
+    }
+    return cls.slice(start).replace(/^!/, '').replace(/!$/, '').replace(/^-/, '');
+}
+
+// A token only the engine could style: an arbitrary value or property, a bare utility it has, or a name under one of its utilities
+function needsEngine(cls) {
+    if (!engineCandidate(cls)) return false;
+    if (!/[-:[\/!.(]/.test(cls)) return TAILWIND_BARE_UTILITIES.has(cls);
+    const base = utilityPart(cls);
+    if (/^[[(]/.test(base)) return true;
+    if (!TAILWIND_UTILITY_ROOTS.has(base.split(/[-/[(]/)[0])) return false;
+    return !FRAMEWORK_CLASSES.has(cls);
+}
+
+TailwindCompiler.prototype.armEngineGate = function () {
+    const stamp = window.__tailwindStamp;
+    if (!stamp || !stamp.decision || this.usesStaticPrerenderUtilities) return;
+    stamp.decision.then((accepted) => {
+        if (!accepted || this._engineGate) return;
+        this._engineGate = stamp;
+        if (!this.staticUtilitiesCoveredClasses) return this.engineNeeded(null, 'sheet');
+        if (document.querySelector(AUTHOR_TAILWIND_SELECTOR)) return this.engineNeeded(null, 'author-block');
+        for (const set of [this.staticClassCache, this.dynamicClassCache]) {
+            for (const cls of set) if (!this.checkEngineToken(cls)) return;
+        }
+    });
 };
 
-// Arms once staticUtilitiesReady (sheet + safelist) has settled. Watches for
-// any class token — already on the page, or added/changed after — that the
-// bake doesn't cover and the safelist doesn't excuse: the signal that a
-// "complete" stamp was wrong and the page would otherwise render unstyled.
-// A burst of nodes collapses into one lazy load; the observer disconnects
-// the moment that load succeeds, handing off to the real engine exactly as
-// if it had loaded eagerly.
-TailwindCompiler.prototype.setupUncoveredClassWatcher = function () {
-    if (this.usesStaticPrerenderUtilities) return;
-    if (!this.tailwindEngineWasSkipped()) return;
-    if (window.__mnfstTailwindWatcherArmed) return; // one watcher per page load
-    window.__mnfstTailwindWatcherArmed = true;
+// False once a token needs the engine
+TailwindCompiler.prototype.checkEngineToken = function (cls) {
+    const gate = this._engineGate;
+    if (!gate || gate.trigger) return true;
+    if (gate.tokens.has(cls) || this.staticUtilitiesCoveredClasses.has(cls) || !needsEngine(cls)) return true;
+    if (cls.startsWith('x-') || this.ignoredClassPatterns.some(p => p.test(cls))) return true;
+    this.engineNeeded(cls, 'token');
+    return false;
+};
 
-    let pending = new Set();
-    let loading = false;
-    let observer = null;
+// An added subtree carrying an author text/tailwindcss block
+TailwindCompiler.prototype.checkEngineNode = function (node) {
+    const gate = this._engineGate;
+    if (!gate || gate.trigger) return;
+    if (node.matches(AUTHOR_TAILWIND_SELECTOR) || (node.firstElementChild && node.querySelector(AUTHOR_TAILWIND_SELECTOR))) this.engineNeeded(null, 'author-block');
+};
 
-    const collectFrom = (el) => {
-        const cls = el.getAttribute && el.getAttribute('class');
-        if (!cls) return;
-        for (const tok of cls.split(/\s+/)) {
-            if (tok && !this.isClassCovered(tok)) pending.add(tok);
-        }
-    };
-
-    const flush = this.debounce(() => {
-        if (loading || pending.size === 0) return;
-        const classes = Array.from(pending).sort();
-        pending = new Set();
-        loading = true;
-        console.warn('[Manifest Utilities] Uncovered utility class(es) — loading the Tailwind engine:', classes.join(', '));
-        window.Manifest.loadPlugin('tailwind').then(() => {
-            if (observer) observer.disconnect();
-            window.dispatchEvent(new CustomEvent('manifest:utilities-uncovered', { detail: { classes, engineLoaded: true } }));
-        }).catch((err) => {
-            loading = false; // let a further uncovered class try again
-            console.error('[Manifest Utilities] Failed to load the Tailwind engine:', err);
-            window.dispatchEvent(new CustomEvent('manifest:utilities-uncovered', { detail: { classes, engineLoaded: false } }));
-        });
-    }, this.options.debounceTime || 50);
-
-    observer = new MutationObserver((mutations) => {
-        for (const mutation of mutations) {
-            if (mutation.type === 'attributes') {
-                if (mutation.target.nodeType === Node.ELEMENT_NODE) collectFrom(mutation.target);
-            } else if (mutation.type === 'childList') {
-                for (const node of mutation.addedNodes) {
-                    if (node.nodeType !== Node.ELEMENT_NODE) continue;
-                    collectFrom(node);
-                    if (node.querySelectorAll) {
-                        for (const desc of node.querySelectorAll('[class]')) collectFrom(desc);
-                    }
-                }
-            }
-        }
-        if (pending.size > 0) flush();
-    });
-
-    observer.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['class']
-    });
-    this.uncoveredClassObserver = observer; // exposed for tests/diagnostics
-
-    // A wrongly-stamped "complete" sheet may already have uncovered classes
-    // in the initial markup, before any mutation ever fires — check once now.
-    for (const el of document.querySelectorAll('[class]')) collectFrom(el);
-    if (pending.size > 0) flush();
+TailwindCompiler.prototype.engineNeeded = function (token, reason) {
+    const gate = this._engineGate;
+    if (gate && !gate.trigger) gate.needEngine(token, reason);
 };

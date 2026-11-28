@@ -131,8 +131,9 @@ TailwindCompiler.prototype.scanStaticClasses = async function () {
             
             const componentUrls = [];
 
-            // A complete shipped sheet was baked from these same files: nothing to learn by fetching them
-            const baked = !!document.querySelector('[data-mnfst-utilities][data-mnfst-utilities-complete]');
+            // An accepted skip stamp was baked from these same files: nothing to learn by fetching them
+            const stamp = window.__tailwindStamp;
+            const baked = !!(stamp && stamp.accepted === true && stamp.mode === 'skip');
 
             if (!baked && registry && registry.manifest) {
                 // Get all component paths from manifest
@@ -177,7 +178,9 @@ TailwindCompiler.prototype.scanStaticClasses = async function () {
 
             // Cache static classes
             for (const cls of staticClasses) {
+                if (this.staticClassCache.has(cls)) continue;
                 this.staticClassCache.add(cls);
+                if (this._engineGate) this.checkEngineToken(cls);
             }
 
             this.hasScannedStatic = true;
@@ -320,8 +323,9 @@ TailwindCompiler.prototype.getUsedClasses = function () {
                 allClasses.add(cls);
 
                 // Track dynamic classes separately
-                if (!this.staticClassCache.has(cls)) {
+                if (!this.staticClassCache.has(cls) && !this.dynamicClassCache.has(cls)) {
                     this.dynamicClassCache.add(cls);
+                    if (this._engineGate) this.checkEngineToken(cls);
                 }
             }
         }
