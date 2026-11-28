@@ -6,8 +6,10 @@
  *   b) x-for over x-data: same
  *   c) benign rows still render (title, list items, x-show flag)
  *   d) static and bound-outside-x-for props keep working
- *   e) mnfst-render: the bake runs nothing, baked directives hold no payload,
- *      and the baked page runs nothing on load
+ *   e) .camel bindings, x-bind objects and nested pass-through (outer → inner
+ *      component) never hand data to a component as author text
+ *   f) mnfst-render: the bake runs nothing, baked directives hold no payload,
+ *      x-for components keep their tag in templates, the baked page runs nothing
  *
  * Run: npm run build && node tests/e2e/components-props-xss.e2e.mjs
  * FW_DIR=<dir> serves another build's lib (e.g. the old one, to see it fail).
@@ -42,9 +44,14 @@ const CARD = `<article class="card" :class="$modify('cls')">
   <i x-icon="$modify('icon')"></i>
 </article>`
 
+const CAMEL = `<article class="card"><h3 x-text="$modify('myTitle')"></h3></article>`
+const OUTER = `<div class="outer"><x-card title="$modify('title')" list="$modify('list')" icon="$modify('icon')"></x-card></div>`
+
 const FILES = {
-    '/manifest.json': JSON.stringify({ name: 'x', components: ['components/card.html'], data: { posts: '/data/posts.json', site: '/data/site.json' } }),
+    '/manifest.json': JSON.stringify({ name: 'x', components: ['components/card.html', 'components/camel.html', 'components/outer.html'], data: { posts: '/data/posts.json', site: '/data/site.json' } }),
     '/components/card.html': CARD,
+    '/components/camel.html': CAMEL,
+    '/components/outer.html': OUTER,
     '/data/posts.json': JSON.stringify([EVIL, GOOD]),
     '/data/site.json': JSON.stringify({ title: 'From site' })
 }
@@ -58,6 +65,10 @@ const PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>x</title>
   <section id="xd"><template x-for="p in local"><x-card :title="p.title" :list="p.list" x-bind:cls="p.cls" :icon="p.icon" :flag="p.flag"></x-card></template></section>
   <section id="st"><x-card title="Static" list="['s1','s2','s3']" flag="yes"></x-card></section>
   <section id="bx"><x-card :title="$x.site.title"></x-card></section>
+  <section id="camel"><template x-for="p in $x.posts"><x-camel :my-title.camel="p.title"></x-camel></template></section>
+  <section id="xbo"><template x-for="p in $x.posts"><x-camel x-bind="{ myTitle: p.title }"></x-camel></template></section>
+  <section id="xbl"><template x-for="p in $x.posts"><x-card x-bind="{ title: p.title, list: p.list }"></x-card></template></section>
+  <section id="nest"><template x-for="p in $x.posts"><x-outer :title="p.title" :list="p.list" :icon="p.icon"></x-outer></template></section>
   <section id="bp"><div x-data="{ post: { title: 'Plain' } }"><x-card :title="post.title"></x-card></div></section>
 </body></html>`
 
@@ -100,7 +111,7 @@ const snapshot = (pg) => pg.evaluate(() => {
         flag: !!c.querySelector('.flag') && getComputedStyle(c.querySelector('.flag')).display !== 'none',
         good: c.classList.contains('good')
     }))
-    return { hits: window.__hits, ds: cards('ds'), xd: cards('xd'), st: cards('st'), bx: cards('bx'), bp: cards('bp') }
+    return { hits: window.__hits, ds: cards('ds'), xd: cards('xd'), st: cards('st'), bx: cards('bx'), bp: cards('bp'), camel: cards('camel'), xbo: cards('xbo'), xbl: cards('xbl'), nest: cards('nest') }
 })
 
 async function live(browser, label, url) {
@@ -118,6 +129,11 @@ async function live(browser, label, url) {
         check(`${label} ${id}: payload flag string is truthy text, not code`, evil?.flag === true, JSON.stringify(evil))
         check(`${label} ${id}: benign row renders title, list and flag`, good?.title === 'Hello' && good.items.join() === 'a,b' && good.flag && good.good, JSON.stringify(good))
     }
+    for (const id of ['camel', 'xbo', 'xbl', 'nest']) {
+        const [evil, good] = s[id]
+        check(`${label} ${id}: payload title rendered as text, benign title intact`, evil?.title === EVIL.title && good?.title === 'Hello', JSON.stringify(s[id]))
+    }
+    check(`${label} xbl/nest: lists pass through as values`, s.xbl[1]?.items.join() === 'a,b' && s.nest[1]?.items.join() === 'a,b', JSON.stringify([s.xbl[1], s.nest[1]]))
     check(`${label}: static props still work`, s.st[0]?.title === 'Static' && s.st[0].items.join() === 's1,s2,s3' && s.st[0].flag, JSON.stringify(s.st))
     check(`${label}: bound $x prop outside x-for`, s.bx[0]?.title === 'From site', JSON.stringify(s.bx))
     check(`${label}: bound scope prop outside x-for`, s.bp[0]?.title === 'Plain', JSON.stringify(s.bp))
@@ -143,6 +159,7 @@ function prerender() {
     check('prerender: the bake ran no payload', !/data-bake-hits="/.test(html), (html.match(/data-bake-hits="[^"]*"/) || [''])[0])
     const bad = [...html.matchAll(/\s((?:x-|:|@)[\w:.-]*)="([^"]*)"/g)].filter((m) => m[1] !== 'x-data' && /hit\(|hit&#39;|defaultView/.test(m[2])).map((m) => `${m[1]}="${m[2]}"`)
     check('prerender: no payload in any baked directive', bad.length === 0, bad.slice(0, 4).join(' | '))
+    check('prerender: template placeholders keep their tag name', !/<x\s+-/.test(html), (html.match(/<x\s+-[^>]{0,60}/) || [''])[0])
     return dir
 }
 
@@ -163,8 +180,8 @@ async function main() {
                     await wait(2500)
                     const s = await snapshot(pg)
                     check('prerender: baked page runs no payload on load', s.hits.length === 0, JSON.stringify(s.hits))
-                    // x-for rows can't re-hydrate here: mnfst-render's binding strip mangles <x-card> in templates (separate defect)
                     check('prerender: baked page keeps a bound prop', s.bx[0]?.title === 'From site', JSON.stringify(s.bx[0]))
+                    check('prerender: baked x-for components show the payload as text', s.ds[0]?.title === EVIL.title && s.ds[1]?.title === 'Hello', JSON.stringify(s.ds))
                     await pg.close()
                 } finally { await baked.close() }
             }
