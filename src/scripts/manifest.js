@@ -1868,16 +1868,40 @@ function routeConditionsMatch(routeCondition, normalizedPath, matches) {
 	// Until Alpine starts, hide what it will decide on: x-show and :hidden inside an x-data scope, outside x-ignore; never on prerendered pages
 	const PENDING_RULE = ':root:not(:has(meta[name="manifest:prerendered"][content="1"])) :is([x-show], [x-show\\.important], [\\:hidden], [x-bind\\:hidden]):is([x-data], [x-data] *):not([x-ignore], [x-ignore] *) { display: none !important }';
 	let pendingStyle = null;
+	const LAST_RESORT_MS = 10000;
+	// Alpine will not start: nothing more is held for it
+	let alpineAbsent = false;
+	// An author's parser-blocking Alpine tag ahead of the loader has already run, or failed
+	function alpineTagAhead() {
+		for (const tag of document.querySelectorAll('script[src*="alpinejs"]')) {
+			if (!tag.async && !tag.defer && tag.type !== 'module' && loaderScript && (loaderScript.compareDocumentPosition(tag) & Node.DOCUMENT_POSITION_PRECEDING)) return true;
+		}
+		return false;
+	}
+	// An author's Alpine tag that fails; the loader's own candidates fall back and settle in loadAlpine
+	function onScriptError(e) {
+		const tag = e.target;
+		if (tag && tag.tagName === 'SCRIPT' && (tag.src || '').includes('alpinejs') && !tag.hasAttribute('data-mnfst-loading')) releaseParseHides();
+	}
 	function holdUntilAlpine() {
-		if (window.__manifestRender === true || !document.head) return;
+		if (window.__manifestRender === true || !document.head || window.Alpine) return;
+		if (alpineTagAhead()) { alpineAbsent = true; return; }
 		pendingStyle = document.createElement('style');
 		pendingStyle.textContent = PENDING_RULE;
 		document.head.appendChild(pendingStyle);
 		document.addEventListener('alpine:initialized', releaseUntilAlpine, { once: true });
+		document.addEventListener('error', onScriptError, true);
+		// Last resort, so the rule never outlives the boot: a start event missed, or no Alpine well after parsing
+		const started = () => window.Alpine && document.querySelector('[x-data]')?._x_dataStack;
+		window.addEventListener('load', () => { if (pendingStyle && started()) releaseUntilAlpine(); }, { once: true });
+		document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
+			if (pendingStyle) started() ? releaseUntilAlpine() : releaseParseHides();
+		}, LAST_RESORT_MS), { once: true });
 	}
 	function releaseUntilAlpine() {
 		if (pendingStyle) pendingStyle.remove();
 		pendingStyle = null;
+		document.removeEventListener('error', onScriptError, true);
 	}
 	// Tab panels hidden at parse until the tabs module converts them; shown again if it or Alpine never arrives
 	const parseHiddenPanels = [];
@@ -1887,6 +1911,7 @@ function routeConditionsMatch(routeCondition, normalizedPath, matches) {
 	}
 	// Alpine will not start: show everything held for it
 	function releaseParseHides() {
+		alpineAbsent = true;
 		releaseUntilAlpine();
 		document.querySelectorAll('[x-cloak]').forEach(el => { if (el.__manifestRouteCloak) el.removeAttribute('x-cloak'); });
 		revealParseHiddenPanels(true);
@@ -1921,7 +1946,7 @@ function routeConditionsMatch(routeCondition, normalizedPath, matches) {
 			if (condition === null && !panel) return;
 			if (seen.has(el)) return;
 			seen.add(el);
-			if (el.hasAttribute('x-cloak') || el.closest('[x-ignore]')) return;
+			if (alpineAbsent || el.hasAttribute('x-cloak') || el.closest('[x-ignore]')) return;
 			if (condition !== null) {
 				if (hasXShow(el) || (condition && routeSurelyHidden(condition, path))) {
 					el.setAttribute('x-cloak', '');

@@ -65,7 +65,26 @@ const COMPONENTS = {
   plain: '<p id="cp" x-show="open">uses the page scope</p>',
   loose: '<p id="cl" x-show="false">no scope</p>',
 }
+// Every boot path: the temporary rule must not outlive it
+const BOOT_BODY = `<body x-data><h1 id="bm" x-show="true">Main</h1><p id="bx" x-show="false">x</p><span id="bh" :hidden="false">h</span>
+<button x-tab="b1">1</button><button x-tab="b2">2</button><div id="b1" x-tabpanel="b">one</div><div id="b2" x-tabpanel="b">two</div>`
+const AUTHOR_ALPINE = '<script src="/vendor/alpinejs/cdn.min.js"></script>'
+const LOADER = (attrs = '') => `<script src="/scripts/manifest.js" data-module-base="/scripts" data-modules="tabs"${attrs}></script>`
+const boot = ({ head = '', end = '' }) => `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>b</title>${CSS}<link rel="manifest" href="/manifest.json">${head}</head>${BOOT_BODY}${end}</body></html>`
+const BOOTS = {
+  authorBefore: { page: boot({ head: AUTHOR_ALPINE + LOADER() }), starts: true },
+  authorAfter: { page: boot({ head: LOADER() + AUTHOR_ALPINE }), starts: true },
+  authorDefer: { page: boot({ head: LOADER() + AUTHOR_ALPINE.replace('<script ', '<script defer ') }), starts: true },
+  authorBodyEnd: { page: boot({ head: LOADER(), end: AUTHOR_ALPINE }), starts: true },
+  authorFail: { page: boot({ head: LOADER() + '<script src="/missing/alpinejs.js"></script>' }), starts: false },
+  authorFailBefore: { page: boot({ head: '<script src="/missing/alpinejs.js"></script>' + LOADER() }), starts: false },
+  loaderAlpine: { page: boot({ head: LOADER(' data-alpine="/__alpine.js"') }), starts: true },
+  loaderFail: { page: boot({ head: LOADER(' data-alpine="/__missing-alpine.js"') }), starts: false },
+  alpineHangs: { page: boot({ head: LOADER(' data-alpine="/__hang/alpinejs.js"') }), starts: false, settle: 11500 },
+  integrityAttr: { page: boot({ head: LOADER(' data-alpine="/__alpine.js" data-integrity') }), starts: null },
+}
 const PAGES = {
+  ...Object.fromEntries(Object.entries(BOOTS).map(([k, v]) => [k, v.page])),
   alpineFail: ALPINE_FAIL(' data-modules="tabs"'),
   alpineFailDerived: ALPINE_FAIL(''),
   inserted: INSERTED(true),
@@ -91,6 +110,9 @@ const server = await new Promise(r => { const s = http.createServer((req, res) =
   if (u.pathname === '/manifest.json') return send('application/json', u.searchParams.get('kind') === 'comp' ? JSON.stringify({ name: 'f', components: Object.keys(COMPONENTS).map(n => `components/${n}.html`) }) : '{"name":"f"}')
   const comp = u.pathname.match(/^\/components\/(\w+)\.html$/)
   if (comp && COMPONENTS[comp[1]]) return send('text/html', COMPONENTS[comp[1]])
+  if (u.pathname === '/__hang/alpinejs.js') return
+  if (u.pathname === '/vendor/alpinejs/cdn.min.js') return send('text/javascript', readFileSync(ALPINE))
+  if (u.pathname === '/away') return send('text/html', '<!DOCTYPE html><title>away</title><p>away</p>')
   if (u.pathname === '/slow.js') return setTimeout(() => send('text/javascript', 'window.__slow = 1'), 1200)
   if (u.pathname === '/scripts/manifest.js') return send('text/javascript', readFileSync(path.join(src, 'scripts/manifest.js')))
   if (u.pathname === '/__alpine.js') return setTimeout(() => send('text/javascript', readFileSync(ALPINE)), delay.alp)
@@ -169,7 +191,7 @@ async function frames(kind, ids, settleMs) {
     }
     requestAnimationFrame(tick)
   }, ids)
-  await p.goto(base + '/?kind=' + kind, { waitUntil: 'load', timeout: 60000 })
+  await p.goto(base + '/?kind=' + kind, { waitUntil: 'domcontentloaded', timeout: 60000 })
   await new Promise(r => setTimeout(r, settleMs))
   const out = await p.evaluate((ids) => {
     const f = window.__frames
@@ -182,6 +204,30 @@ async function frames(kind, ids, settleMs) {
   return { ...out, errors }
 }
 delay = SCENARIOS.fast
+const ruleLeft = "[...document.querySelectorAll('style')].filter(st => st.textContent.includes('x-show')).length"
+for (const [kind, { starts, settle = 2500 }] of Object.entries(BOOTS)) {
+  const r = await frames(kind, ['bm', 'bx', 'bh', 'b1', 'b2'], settle)
+  const ctx = await browser.createBrowserContext(); const p = await ctx.newPage()
+  await p.goto(base + '/?kind=' + kind, { waitUntil: 'domcontentloaded' }); await new Promise(res => setTimeout(res, settle))
+  const left = await p.evaluate(ruleLeft); const alpine = await p.evaluate(() => !!window.Alpine)
+  await ctx.close()
+  metrics[`boot ${kind}`] = { alpine, ruleLeft: left, bm: r.per.bm.frames, b1: r.per.b1.frames, blinks: r.per.bm.blinks + r.per.b1.blinks }
+  const shown = r.end.bm && r.end.bh && r.end.b1
+  // Alpine runs: its state; Alpine never runs: everything shows, as on master
+  const state = starts === false ? r.end.bx && r.end.b2 : starts === true ? !r.end.bx && !r.end.b2 : true
+  check(left === 0 && shown && state && r.per.bm.blinks === 0 && r.per.b1.blinks === 0, `boot ${kind}: rule gone, truthy content and the default tab shown, no blink`, { left, alpine, end: r.end, blinks: [r.per.bm.blinks, r.per.b1.blinks] })
+}
+// Back/forward cache: the restored page keeps its state and no rule comes back
+{
+  const ctx = await browser.createBrowserContext(); const p = await ctx.newPage()
+  await p.evaluateOnNewDocument(() => { window.addEventListener('pageshow', (e) => { if (e.persisted) window.__restored = true }) })
+  await p.goto(base + '/?kind=loaderAlpine', { waitUntil: 'load' }); await new Promise(res => setTimeout(res, 800))
+  await p.goto(base + '/away', { waitUntil: 'load' }); await p.goBack({ waitUntil: 'load' }); await new Promise(res => setTimeout(res, 300))
+  const out = await p.evaluate((rule) => ({ restored: !!window.__restored, left: eval(rule), main: document.getElementById('bm').getClientRects().length > 0 }), ruleLeft)
+  await ctx.close()
+  metrics.bfcache = out
+  check(out.left === 0 && out.main, `back/forward ${out.restored ? '(restored from bfcache)' : '(not restored from bfcache: reloaded)'}: rule gone, content shown`, out)
+}
 for (const kind of ['alpineFail', 'alpineFailDerived']) {
   const r = await frames(kind, ['af', 'a1', 'a2'], 2500)
   metrics[kind] = r.per
