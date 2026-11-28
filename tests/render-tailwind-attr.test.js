@@ -55,6 +55,15 @@ describe('render: data-tailwind strip matches the bare attribute only', () => {
         })
     }
 
+    it('custom elements named like raw-text tags are ordinary tags', () => {
+        const html = '<script-x data-tailwind-tokens></script-x><main>KEEP</main><style-guide data-tailwind></style-guide><textarea-autosize></textarea-autosize><script>1</script><style>a{}</style>'
+        for (const [, strip] of strips) {
+            expect(strip(html)).toBe('<script-x data-tailwind-tokens></script-x><main>KEEP</main><style-guide></style-guide><textarea-autosize></textarea-autosize><script>1</script><style>a{}</style>')
+        }
+        expect(page.htmlUsesRuntimeTailwind('<style-guide></style-guide><script src="/manifest.min.js" data-tailwind></script><style>a{}</style>')).toBe(true)
+        expect(page.htmlUsesRuntimeTailwind('<script-x></script-x><script src="/manifest.min.js" data-tailwind></script><script>1</script>')).toBe(true)
+    })
+
     it('stripRuntimeTailwindArtifacts still drops the runtime engine <style>', () => {
         expect(page.stripRuntimeTailwindArtifacts('<head><style>/*! tailwindcss v4 */ .a{}</style></head>')).toBe('<head></head>')
     })

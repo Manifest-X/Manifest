@@ -816,7 +816,7 @@ function stripDevOnlyContent(html) {
 }
 
 // Start tags only (raw-text bodies, comments and text untouched); attributes matched by exact name
-const TAG_RE = /<!--[\s\S]*?-->|<(script|style|textarea)\b((?:[^>"']|"[^"]*"|'[^']*')*)>[\s\S]*?<\/\1\s*>|<([a-zA-Z][\w:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/gi;
+const TAG_RE = /<!--[\s\S]*?-->|<(script|style|textarea)(?=[\s/>])((?:[^>"']|"[^"]*"|'[^']*')*)>[\s\S]*?<\/\1\s*>|<([a-zA-Z][\w:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/gi;
 const ATTR_RE = /\s+([^\s"'>\/=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
 
 function tagHasAttr(attrs, name) {
