@@ -23,6 +23,11 @@ function initializeCallbacks() {
         // been forgotten.
         try { sessionStorage.removeItem('manifest:magic-link:callback'); } catch (e) {}
 
+        // An abandoned OAuth attempt must not vouch for a later link
+        if (!userId || !secret) {
+            try { sessionStorage.removeItem('manifest:oauth:redirect'); } catch (e) {}
+        }
+
         // Check OAuth redirect flag
         const isOAuthCallback = sessionStorage.getItem('manifest:oauth:redirect') === 'true';
 

@@ -159,3 +159,56 @@ describe('default confirmation', () => {
         expect((await p.store.confirmSignIn()).success).toBe(true)
     })
 })
+
+describe('guest-auto sites', () => {
+    const cfg = { guestAuto: true, guestUpgrade: true }
+    function page() {
+        let who = null
+        const p = boot({
+            cfg: { teams: false, magic: true, ...cfg }, search: '?userId=atk&secret=S',
+            responder: (name) => {
+                if (name === 'account.get') return who || noSession()
+                if (name === 'account.createAnonymousSession') { who = { $id: 'g1' }; return { $id: 'sG', provider: 'anonymous' } }
+                if (name === 'account.createSession') { if (who) { const e = new Error('Creation of a session is prohibited when a session is active.'); e.type = 'user_session_already_exists'; return e } who = { $id: 'atk' }; return { $id: 's1', provider: 'magic-url' } }
+                if (name === 'account.getSession') return { $id: 'sG', provider: who?.$id === 'g1' ? 'anonymous' : 'magic-url' }
+                if (name === 'account.listSessions') return { sessions: [{ $id: 'sG', current: true, provider: 'anonymous' }] }
+                return {}
+            },
+        })
+        return p
+    }
+
+    it('no guest is created while the link waits, so Continue signs in', async () => {
+        const p = page()
+        await waiting(p)
+        await sleep(80)
+        expect(count(p, 'account.createAnonymousSession')).toBe(0)
+        expect((await p.store.confirmSignIn()).success).toBe(true)
+        expect(p.store.user.$id).toBe('atk')
+        expect(p.store.isAnonymous).toBe(false)
+    })
+
+    it('Cancel creates the guest that was waiting', async () => {
+        const p = page()
+        await waiting(p)
+        p.store.cancelSignIn()
+        await until(() => count(p, 'account.createAnonymousSession') === 1)
+        expect(count(p, 'account.createSession')).toBe(0)
+    })
+
+    it('a guest that already exists is replaced by a link for another account, not "upgraded"', async () => {
+        const p = start({ cfg, persisted: asGuest })
+        await waiting(p)
+        expect((await p.store.confirmSignIn()).success).toBe(true)
+        expect(p.fake.names().filter(n => n === 'account.deleteSession' || n === 'account.createSession')).toEqual(['account.deleteSession', 'account.createSession'])
+    })
+})
+
+describe('abandoned OAuth attempt', () => {
+    it('its flag is cleared on a load with no callback, so a later link in the tab is not taken as OAuth', async () => {
+        const p = start({ search: '' })
+        p.window.sessionStorage.setItem('manifest:oauth:redirect', 'true')
+        p.window.ManifestAppwriteAuthCallbacks.detect()
+        expect(p.window.sessionStorage.getItem('manifest:oauth:redirect')).toBe(null)
+    })
+})

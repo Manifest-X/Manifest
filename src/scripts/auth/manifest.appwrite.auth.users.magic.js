@@ -270,12 +270,23 @@ function initializeMagicLinks() {
                 pendingMagicSignIn = null;
                 this.signInPending = false;
                 if (!pending) return { success: false, error: 'No sign-in is waiting for confirmation' };
-                return this.handleMagicLinkCallback(pending.userId, pending.secret);
+                const result = await this.handleMagicLinkCallback(pending.userId, pending.secret);
+                if (!result.success) this._guestAfterSignInAnswer();
+                return result;
+            };
+
+            // Guest creation waited on the answer
+            store._guestAfterSignInAnswer = function () {
+                if (!this.isAuthenticated && !this._sessionUnverified && this._guestAuto && this._createAnonymousSession) {
+                    this._createAnonymousSession();
+                }
             };
 
             store.cancelSignIn = function () {
+                const wasPending = !!pendingMagicSignIn;
                 pendingMagicSignIn = null;
                 this.signInPending = false;
+                if (wasPending) this._guestAfterSignInAnswer();
             };
 
             // Handle magic link callback
@@ -295,7 +306,8 @@ function initializeMagicLinks() {
 
                 try {
                     const appwriteConfig = await config.getAppwriteConfig();
-                    const upgradingGuest = !!(appwriteConfig?.guestUpgrade && this.isAnonymous);
+                    // An upgrade link is made for the guest's own id; any other account replaces the guest
+                    const upgradingGuest = !!(appwriteConfig?.guestUpgrade && this.isAnonymous && this.user?.$id === userId);
                     // A guest being replaced (not upgraded) by a different account — its
                     // team state must be cleared before loading the new user's teams.
                     const replacingGuest = this.isAnonymous && !upgradingGuest;

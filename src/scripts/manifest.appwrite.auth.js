@@ -722,7 +722,7 @@ function initializeAuthStore() {
         error: null,
         magicLinkSent: false,
         magicLinkExpired: false,
-        signInPending: false, // A sign-in link opened outside the browser that requested it awaits confirmation
+        signInPending: false, // A sign-in link awaits confirmation
         otpSent: false, // OTP (email/phone): a code has been sent and is awaiting entry
         otpExpired: false, // OTP (email/phone): the entered code was wrong/expired
         otpPhrase: null, // Email OTP: security phrase to display (when enabled; phone has none)
@@ -1797,8 +1797,8 @@ async function initializeAppwriteAuthPlugin() {
                     callbacks.process(callbackInfo);
                 }
 
-                // If no session and guest-auto is enabled, create guest session (not while the session check is unreachable)
-                if (!store.isAuthenticated && !store._sessionUnverified && store._guestAuto && store._createAnonymousSession) {
+                // If no session and guest-auto is enabled, create guest session (not while the session check is unreachable or a sign-in link awaits confirmation)
+                if (!store.isAuthenticated && !store.signInPending && !store._sessionUnverified && store._guestAuto && store._createAnonymousSession) {
                     store._createAnonymousSession();
                 }
             };
@@ -5296,20 +5296,31 @@ function initializeTeamsMembers() {
                     return { success: false, error: 'You must be signed in to update membership' };
                 }
 
-                const isUpdatingSelf = !!this.user && (this.currentTeamMemberships?.some(
-                    m => m.$id === membershipId && m.userId === this.user.$id
-                ) || (this.currentTeam?.$id === teamId && this._currentMembership?.()?.$id === membershipId));
+                const onCurrentTeam = this.currentTeam?.$id === teamId;
+                let own = null;
+                if (this.user) {
+                    if (onCurrentTeam) {
+                        const mine = this.currentTeamMemberships?.find(m => m.$id === membershipId && m.userId === this.user.$id)
+                            || this._currentMembership?.();
+                        if (mine?.$id === membershipId) own = mine;
+                    } else {
+                        // Permissions are known for the current team only: look the membership up
+                        try {
+                            const found = await this._appwrite.teams.getMembership({ teamId, membershipId });
+                            if (found?.userId === this.user.$id) own = found;
+                        } catch (e) {}
+                    }
+                }
 
                 const canUpdateMembers = !!this.hasTeamPermission && await this.hasTeamPermission('updateMembers');
-                if (!isUpdatingSelf) {
+                if (!own) {
                     if (!canUpdateMembers) {
                         return { success: false, error: 'You do not have permission to update member roles' };
                     }
-                } else if (!canUpdateMembers) {
+                } else if (!canUpdateMembers || !onCurrentTeam) {
                     // Without updateMembers a member may drop their own roles, never add one
-                    const own = this.currentTeamMemberships?.find(m => m.$id === membershipId) || this._currentMembership?.();
                     const slug = this.roleSlug || (x => x);
-                    const held = new Set((own?.roles || []).map(slug));
+                    const held = new Set((own.roles || []).map(slug));
                     const wanted = this.normalizeRolesForAppwrite ? await this.normalizeRolesForAppwrite(roles, teamId) : roles;
                     if (!Array.isArray(wanted) || wanted.some(role => !held.has(role))) {
                         return { success: false, error: 'You do not have permission to change your own roles' };
@@ -6868,12 +6879,23 @@ function initializeMagicLinks() {
                 pendingMagicSignIn = null;
                 this.signInPending = false;
                 if (!pending) return { success: false, error: 'No sign-in is waiting for confirmation' };
-                return this.handleMagicLinkCallback(pending.userId, pending.secret);
+                const result = await this.handleMagicLinkCallback(pending.userId, pending.secret);
+                if (!result.success) this._guestAfterSignInAnswer();
+                return result;
+            };
+
+            // Guest creation waited on the answer
+            store._guestAfterSignInAnswer = function () {
+                if (!this.isAuthenticated && !this._sessionUnverified && this._guestAuto && this._createAnonymousSession) {
+                    this._createAnonymousSession();
+                }
             };
 
             store.cancelSignIn = function () {
+                const wasPending = !!pendingMagicSignIn;
                 pendingMagicSignIn = null;
                 this.signInPending = false;
+                if (wasPending) this._guestAfterSignInAnswer();
             };
 
             // Handle magic link callback
@@ -6893,7 +6915,8 @@ function initializeMagicLinks() {
 
                 try {
                     const appwriteConfig = await config.getAppwriteConfig();
-                    const upgradingGuest = !!(appwriteConfig?.guestUpgrade && this.isAnonymous);
+                    // An upgrade link is made for the guest's own id; any other account replaces the guest
+                    const upgradingGuest = !!(appwriteConfig?.guestUpgrade && this.isAnonymous && this.user?.$id === userId);
                     // A guest being replaced (not upgraded) by a different account — its
                     // team state must be cleared before loading the new user's teams.
                     const replacingGuest = this.isAnonymous && !upgradingGuest;
@@ -8457,6 +8480,11 @@ function initializeCallbacks() {
         // and reading stale ones could resurrect a credential that should have
         // been forgotten.
         try { sessionStorage.removeItem('manifest:magic-link:callback'); } catch (e) {}
+
+        // An abandoned OAuth attempt must not vouch for a later link
+        if (!userId || !secret) {
+            try { sessionStorage.removeItem('manifest:oauth:redirect'); } catch (e) {}
+        }
 
         // Check OAuth redirect flag
         const isOAuthCallback = sessionStorage.getItem('manifest:oauth:redirect') === 'true';

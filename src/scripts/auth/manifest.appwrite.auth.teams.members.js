@@ -347,20 +347,31 @@ function initializeTeamsMembers() {
                     return { success: false, error: 'You must be signed in to update membership' };
                 }
 
-                const isUpdatingSelf = !!this.user && (this.currentTeamMemberships?.some(
-                    m => m.$id === membershipId && m.userId === this.user.$id
-                ) || (this.currentTeam?.$id === teamId && this._currentMembership?.()?.$id === membershipId));
+                const onCurrentTeam = this.currentTeam?.$id === teamId;
+                let own = null;
+                if (this.user) {
+                    if (onCurrentTeam) {
+                        const mine = this.currentTeamMemberships?.find(m => m.$id === membershipId && m.userId === this.user.$id)
+                            || this._currentMembership?.();
+                        if (mine?.$id === membershipId) own = mine;
+                    } else {
+                        // Permissions are known for the current team only: look the membership up
+                        try {
+                            const found = await this._appwrite.teams.getMembership({ teamId, membershipId });
+                            if (found?.userId === this.user.$id) own = found;
+                        } catch (e) {}
+                    }
+                }
 
                 const canUpdateMembers = !!this.hasTeamPermission && await this.hasTeamPermission('updateMembers');
-                if (!isUpdatingSelf) {
+                if (!own) {
                     if (!canUpdateMembers) {
                         return { success: false, error: 'You do not have permission to update member roles' };
                     }
-                } else if (!canUpdateMembers) {
+                } else if (!canUpdateMembers || !onCurrentTeam) {
                     // Without updateMembers a member may drop their own roles, never add one
-                    const own = this.currentTeamMemberships?.find(m => m.$id === membershipId) || this._currentMembership?.();
                     const slug = this.roleSlug || (x => x);
-                    const held = new Set((own?.roles || []).map(slug));
+                    const held = new Set((own.roles || []).map(slug));
                     const wanted = this.normalizeRolesForAppwrite ? await this.normalizeRolesForAppwrite(roles, teamId) : roles;
                     if (!Array.isArray(wanted) || wanted.some(role => !held.has(role))) {
                         return { success: false, error: 'You do not have permission to change your own roles' };

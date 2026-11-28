@@ -18,7 +18,7 @@ function start({ cfg, persisted, search = '?userId=u1&secret=s1', account = {} }
     const p = boot({
         cfg: { teams: false, magic: true, ...cfg }, persisted, search,
         // The link was requested in this browser
-        local: { 'manifest:magic-link:requested': JSON.stringify([{ u: 'u1', t: Date.now() }]) },
+        local: { 'manifest:magic-link:requested': JSON.stringify([{ u: 'u1', t: Date.now() }, { u: 'guestV', t: Date.now() }]) },
         responder: (name, arg) => {
             if (account[name]) return account[name](arg)
             if (name === 'account.listSessions') return { sessions: [{ $id: 'sV', current: true, provider: 'email' }] }
@@ -57,10 +57,12 @@ describe('signed-in (non-guest) visitor opens a magic link that fails', () => {
 
 describe('guestUpgrade: Appwrite answers that a session already exists', () => {
     const cfg = { guestAuto: true, guestUpgrade: true }
+    // An upgrade link is made for the guest's own id
+    const ownLink = '?userId=guestV&secret=s1'
 
     it('the current session is still anonymous: guest state kept, error surfaced, no login', async () => {
         const p = start({
-            cfg, persisted: asGuest,
+            cfg, persisted: asGuest, search: ownLink,
             account: {
                 'account.get': () => guest,
                 'account.listSessions': () => ({ sessions: [{ $id: 'sG', current: true, provider: 'anonymous' }] }),
@@ -80,7 +82,7 @@ describe('guestUpgrade: Appwrite answers that a session already exists', () => {
 
     it('an invalid token keeps the guest (its session was never ended)', async () => {
         const p = start({
-            cfg, persisted: asGuest,
+            cfg, persisted: asGuest, search: ownLink,
             account: {
                 'account.get': () => guest,
                 'account.listSessions': () => ({ sessions: [{ $id: 'sG', current: true, provider: 'anonymous' }] }),
@@ -97,7 +99,7 @@ describe('guestUpgrade: Appwrite answers that a session already exists', () => {
     it('the current session is no longer anonymous: treated as upgraded, as before', async () => {
         const upgraded = { $id: 'guestV', email: 'g@x.test' }
         const p = start({
-            cfg, persisted: asGuest,
+            cfg, persisted: asGuest, search: ownLink,
             account: {
                 'account.get': () => upgraded,
                 'account.listSessions': () => ({ sessions: [{ $id: 'sG', current: true, provider: 'anonymous' }] }),
@@ -115,7 +117,7 @@ describe('guestUpgrade: Appwrite answers that a session already exists', () => {
         const upgraded = { $id: 'guestV', email: 'g@x.test' }
         let who = guest
         const p = start({
-            cfg, persisted: asGuest,
+            cfg, persisted: asGuest, search: ownLink,
             account: {
                 'account.get': () => who,
                 'account.listSessions': () => ({ sessions: [{ $id: 'sG', current: true, provider: 'anonymous' }] }),

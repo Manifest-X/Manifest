@@ -17,6 +17,7 @@ async function start(roles) {
                 case 'teams.list': return { teams: [{ $id: 't1', name: 'One' }], total: 1 }
                 case 'teams.listMemberships': return { memberships: [{ $id: 'm-me', userId: 'uA', roles, confirm: true }, { $id: 'm-b', userId: 'uB', roles: ['viewer'], confirm: true }], total: 2 }
                 case 'teams.getPrefs': return { roles: {} }
+                case 'teams.getMembership': return arg.membershipId === 'm-me-t2' ? { $id: 'm-me-t2', teamId: 't2', userId: 'uA', roles: ['viewer'] } : { $id: arg.membershipId, teamId: arg.teamId, userId: 'uB', roles: ['viewer'] }
                 case 'teams.updateMembership': return { membership: { $id: arg.membershipId, userId: arg.membershipId === 'm-me' ? 'uA' : 'uB', roles: arg.roles } }
             }
         },
@@ -59,5 +60,13 @@ describe('own membership', () => {
         const page = await start(['editor', 'owner'])
         expect((await page.store.updateMembership('t1', 'm-b', ['Admin'])).error).toBe('You do not have permission to update member roles')
         expect(sent(page)).toEqual([])
+    })
+
+    it('permission in the current team does not let an Admin add roles to themself in another team', async () => {
+        const page = await start(['admin', 'owner'])
+        const result = await page.store.updateMembership('t2', 'm-me-t2', ['Admin'])
+        expect(result.error).toBe('You do not have permission to change your own roles')
+        expect(sent(page)).toEqual([])
+        expect((await page.store.updateMembership('t2', 'm-me-t2', [])).success).toBe(true)
     })
 })
