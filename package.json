@@ -21,7 +21,7 @@
         "LICENSE"
     ],
     "dependencies": {
-        "tailwindcss": "^4.2.4"
+        "tailwindcss": "4.3.1"
     },
     "scripts": {
         "clean": "rimraf src/styles/manifest.css src/styles/manifest.min.css src/styles/manifest.theme.css src/styles/manifest.code.css src/styles/manifest.code.min.css lib",
@@ -75,8 +75,10 @@
         "test:e2e:virtual-heights": "node tests/e2e/virtual-heights.e2e.mjs",
         "test:e2e:virtual-recycle": "node tests/e2e/virtual-recycle.e2e.mjs",
         "test:e2e:virtual-scroll-to": "node tests/e2e/virtual-scroll-to.e2e.mjs",
+        "test:e2e:virtual-prerender": "node tests/e2e/virtual-prerender.e2e.mjs",
         "test:e2e:dropdown-repoint": "node tests/e2e/dropdown-repoint.e2e.mjs",
         "test:e2e:tailwind-dark": "node tests/e2e/tailwind-dark-variant.e2e.mjs",
+        "test:e2e:tailwind-stamp": "node tests/e2e/tailwind-stamp.e2e.mjs",
         "test:e2e:inline-style-variants": "node tests/e2e/utilities-inline-style-variants.e2e.mjs",
         "test:e2e:presence-tabs": "node tests/e2e/presence-tabs.e2e.mjs",
         "test:e2e:sri": "node tests/e2e/loader-sri.e2e.mjs",
@@ -91,7 +93,7 @@
         "@rollup/plugin-commonjs": "^28.0.1",
         "@rollup/plugin-node-resolve": "^15.3.0",
         "@rollup/plugin-terser": "^0.4.4",
-        "@tailwindcss/cli": "^4.2.4",
+        "@tailwindcss/cli": "4.3.1",
         "ajv": "^8.20.0",
         "alpinejs": "3.17.5",
         "cssnano": "^7.1.1",

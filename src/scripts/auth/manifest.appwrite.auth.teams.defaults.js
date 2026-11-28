@@ -36,6 +36,32 @@ async function resolvePersonalTeamName(nameConfig) {
     return nameConfig;
 }
 
+// Default teams this browser seeded, per user
+function readSeededTeamIds(userId) {
+    if (!userId) return [];
+    try {
+        const ids = JSON.parse(localStorage.getItem(`manifest:default-teams:${userId}`) || '[]');
+        return Array.isArray(ids) ? ids : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function writeSeededTeamIds(userId, ids) {
+    if (!userId) return;
+    try {
+        localStorage.setItem(`manifest:default-teams:${userId}`, JSON.stringify(ids));
+    } catch (e) {
+        console.warn('[Manifest Appwrite Auth] Failed to record default teams:', e);
+    }
+}
+
+function recordSeededTeam(userId, teamId) {
+    if (!userId || !teamId) return;
+    const ids = readSeededTeamIds(userId);
+    if (!ids.includes(teamId)) writeSeededTeamIds(userId, [...ids, teamId]);
+}
+
 // Add default teams methods to auth store
 function initializeTeamsDefaults() {
     if (typeof Alpine === 'undefined') {
@@ -159,12 +185,21 @@ function initializeTeamsDefaults() {
                     }
                 }
 
-                // Find teams matching default team names
+                // Find teams matching default team names; a same-name seed from this browser goes first
                 const defaultTeams = this.teams.filter(team => allDefaultTeamNames.includes(team.name));
-                return defaultTeams;
+                const seeded = readSeededTeamIds(this.user?.$id);
+                const ordered = [];
+                for (const team of defaultTeams) {
+                    if (ordered.includes(team)) continue;
+                    const own = seeded.includes(team.$id) ? null
+                        : defaultTeams.find(t => t.name === team.name && seeded.includes(t.$id) && !ordered.includes(t));
+                    if (own) ordered.push(own);
+                    ordered.push(team);
+                }
+                return ordered;
             };
 
-            // Clean up duplicate permanent/template teams (keeps the oldest one, deletes the rest)
+            // Clean up duplicate permanent/template teams this browser seeded (keeps the oldest one, deletes the rest)
             // This bypasses the immutable check for duplicates only
             store.cleanupDuplicateDefaultTeams = async function () {
                 if (!this.teams || this.teams.length === 0) {
@@ -200,10 +235,13 @@ function initializeTeamsDefaults() {
 
                 let cleanedCount = 0;
                 const errors = [];
+                const userId = this.user?.$id;
+                const seeded = readSeededTeamIds(userId);
+                const removed = [];
 
-                // For each default team name, find duplicates and delete all but the oldest
+                // For each default team name, find duplicates among this browser's seeds and delete all but the oldest
                 for (const teamName of allDefaultTeamNames) {
-                    const matchingTeams = this.teams.filter(team => team.name === teamName);
+                    const matchingTeams = this.teams.filter(team => team.name === teamName && seeded.includes(team.$id));
 
                     if (matchingTeams.length > 1) {
                         // Sort by creation date (oldest first) and keep the first one
@@ -226,6 +264,7 @@ function initializeTeamsDefaults() {
                                     // Directly delete via Appwrite API (bypassing our deleteTeam method which checks immutable)
                                     await this._appwrite.teams.delete({ teamId: team.$id });
                                     cleanedCount++;
+                                    removed.push(team.$id);
                                 }
                             } catch (error) {
                                 const errorMsg = `Error deleting duplicate team ${team.$id}: ${error.message}`;
@@ -233,6 +272,10 @@ function initializeTeamsDefaults() {
                             }
                         }
                     }
+                }
+
+                if (removed.length > 0) {
+                    writeSeededTeamIds(userId, readSeededTeamIds(userId).filter(id => !removed.includes(id)));
                 }
 
                 // Refresh teams list after cleanup
@@ -303,6 +346,8 @@ function initializeTeamsDefaults() {
                     const result = await this.createTeam(null, teamName, []);
 
                     if (result.success) {
+                        recordSeededTeam(this.user?.$id, result.team?.$id);
+
                         // Remove from deleted teams list
                         try {
                             const userId = this.user?.$id;
@@ -366,6 +411,8 @@ async function ensureDefaultTeams(store) {
 
     const createdTeams = [];
     const existingTeams = [];
+    const userId = store.user?.$id;
+    const seeded = readSeededTeamIds(userId);
 
     // Get list of deleted template teams for this user (don't recreate them)
     let deletedTeams = [];
@@ -398,7 +445,7 @@ async function ensureDefaultTeams(store) {
                     console.warn(`[Manifest Appwrite Auth] Found ${matchingTeams.length} duplicate permanent teams with name "${teamName}". Using the first one.`);
                     console.warn('[Manifest Appwrite Auth] Duplicate team IDs:', matchingTeams.map(t => t.$id));
                 }
-                existingTeams.push(matchingTeams[0]);
+                existingTeams.push(matchingTeams.find(team => seeded.includes(team.$id)) || matchingTeams[0]);
                 continue;
             }
 
@@ -408,6 +455,7 @@ async function ensureDefaultTeams(store) {
                 const result = await store.createTeam(null, teamName, []);
 
                 if (result.success) {
+                    recordSeededTeam(userId, result.team?.$id);
                     createdTeams.push(result.team);
                 } else {
                     console.warn(`[Manifest Appwrite Auth] Could not seed permanent team "${teamName}":`, result.error);
@@ -442,7 +490,7 @@ async function ensureDefaultTeams(store) {
                     console.warn(`[Manifest Appwrite Auth] Found ${matchingTeams.length} duplicate template teams with name "${teamName}". Using the first one.`);
                     console.warn('[Manifest Appwrite Auth] Duplicate team IDs:', matchingTeams.map(t => t.$id));
                 }
-                existingTeams.push(matchingTeams[0]);
+                existingTeams.push(matchingTeams.find(team => seeded.includes(team.$id)) || matchingTeams[0]);
                 continue;
             }
 
@@ -452,6 +500,7 @@ async function ensureDefaultTeams(store) {
                 const result = await store.createTeam(null, teamName, []);
 
                 if (result.success) {
+                    recordSeededTeam(userId, result.team?.$id);
                     createdTeams.push(result.team);
                 } else {
                     console.warn(`[Manifest Appwrite Auth] Could not seed template team "${teamName}":`, result.error);

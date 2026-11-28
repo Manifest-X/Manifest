@@ -218,6 +218,7 @@ function initializeMagicLinks() {
                 this.error = null;
                 this.magicLinkExpired = false;
                 this.magicLinkSent = false;
+                let keepIdentity = false;
 
                 try {
                     const appwriteConfig = await config.getAppwriteConfig();
@@ -225,6 +226,8 @@ function initializeMagicLinks() {
                     // A guest being replaced (not upgraded) by a different account — its
                     // team state must be cleared before loading the new user's teams.
                     const replacingGuest = this.isAnonymous && !upgradingGuest;
+                    // A session this callback does not end keeps its identity if sign-in fails
+                    keepIdentity = this.isAuthenticated && !replacingGuest;
 
                     // Delete the existing anonymous session first — UNLESS we're upgrading
                     // the guest in place. For an upgrade the magic token was created against
@@ -250,6 +253,8 @@ function initializeMagicLinks() {
                     } catch (createError) {
                         if (upgradingGuest && createError.message?.includes('prohibited')) {
                             session = await this._appwrite.account.getSession('current');
+                            // Still the guest's session: not upgraded
+                            if (!session || session.provider === 'anonymous') throw createError;
                         } else {
                             throw createError;
                         }
@@ -300,7 +305,8 @@ function initializeMagicLinks() {
                     const errorMessage = error.message || '';
                     const errorCode = error.code || error.statusCode || '';
                     const isRateLimit = errorCode === 429 || errorMessage.includes('Rate limit') || errorMessage.includes('429');
-                    const isExpiredOrInvalid = !isRateLimit && errorMessage && (
+                    const sessionExists = keepIdentity && (error.type === 'user_session_already_exists' || errorMessage.includes('prohibited'));
+                    const isExpiredOrInvalid = !isRateLimit && !sessionExists && errorMessage && (
                         errorMessage.includes('expired') ||
                         errorMessage.includes('Invalid token') ||
                         errorMessage.includes('invalid') ||
@@ -316,8 +322,10 @@ function initializeMagicLinks() {
                         // rate limit the user must re-request the magic link from
                         // their email (cleanupUrl has already stripped URL params).
                         this.error = 'Rate limit exceeded. Please wait a moment and request a new magic link.';
-                        this.isAuthenticated = false;
-                        this.isAnonymous = false;
+                        if (!keepIdentity) {
+                            this.isAuthenticated = false;
+                            this.isAnonymous = false;
+                        }
                         this.magicLinkExpired = false;
                     } else if (isExpiredOrInvalid) {
                         try {
@@ -339,8 +347,10 @@ function initializeMagicLinks() {
                         this.magicLinkSent = false;
                     }
 
-                    this.isAuthenticated = false;
-                    this.isAnonymous = false;
+                    if (!keepIdentity) {
+                        this.isAuthenticated = false;
+                        this.isAnonymous = false;
+                    }
 
                     // Sync state
                     if (this._syncStateToStorage) {

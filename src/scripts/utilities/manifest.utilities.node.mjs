@@ -44,8 +44,7 @@ function createNodeCompiler() {
 // (default: `@import "tailwindcss";` plus whatever such tags are on the
 // page) and derives its candidates from `document.querySelectorAll("[class]")`
 // — it does not see Manifest's theme vars, so this mirrors that: no bridging
-// of `themeCss` into Tailwind's `@theme`. Variants: manifest.tailwind.variants.mjs.
-const TAILWIND_BAKE_VARIANTS = [...TAILWIND_CUSTOM_VARIANTS, TAILWIND_DARK_VARIANT].join('\n');
+// of `themeCss` into Tailwind's `@theme`. Variants and input: manifest.tailwind.variants.mjs.
 
 /** Balanced-brace extraction of a top-level `@layer <name> { ... }` body —
  * the compiled CSS nests braces (media queries, `&:hover`), so a regex can't
@@ -133,14 +132,19 @@ function loadTailwindEngine(injected) {
  * would leak earlier calls' classes into later output — the same reason the
  * browser engine tracks its own "already seen" set (see the header comment)
  * before calling build(). */
-const TAILWIND_BAKE_INPUT = `@layer theme, base, components, utilities;\n@import "tailwindcss/theme" layer(theme);\n@import "tailwindcss/utilities" layer(utilities);\n${TAILWIND_BAKE_VARIANTS}\n`;
+const TAILWIND_BAKE_INPUT = TAILWIND_ENGINE_INPUT;
+// sha256 prefix of the browser engine this mnfst version bundles (lib/manifest.tailwind.js); stamped by build.mjs
+const TAILWIND_ENGINE_HASH = '';
 
-// Pass report: { ran, emitted, reason: null | 'no-classes' | 'unavailable' | 'error', version, input, candidates }
+// Pass report: { ran, emitted, reason: null | 'no-classes' | 'unavailable' | 'error', version, seed, input, candidates }
 async function compileTailwindPass(classes, injected) {
-    const report = { ran: false, emitted: false, reason: null, version: null, input: TAILWIND_BAKE_INPUT, candidates: classes.slice().sort() };
+    const report = { ran: false, emitted: false, reason: null, version: null, seed: null, input: TAILWIND_BAKE_INPUT, candidates: classes.slice().sort() };
     const result = (css, reason) => {
         if (reason) report.reason = reason;
-        else report.ran = true;
+        else {
+            report.ran = true;
+            report.seed = tailwindSeed(report.version, report.input, TAILWIND_ENGINE_HASH);
+        }
         report.emitted = !!css;
         return { css, report };
     };
@@ -167,6 +171,12 @@ async function compileTailwindPass(classes, injected) {
         const parts = [];
         if (theme) parts.push(`@layer theme {\n${theme}\n}`);
         parts.push(`@layer utilities {\n${utilities}\n}`);
+        // Initial values the utilities compose with (shadow, ring, transform): without the engine nothing else declares them.
+        // The engine's fallback layer goes in base so it stays below utilities whatever sheet declared the layers first
+        const properties = css.match(/@property\s+--[\w-]+\s*\{[^{}]*\}/g);
+        if (properties) parts.push(properties.join('\n'));
+        const fallback = extractLayerBody(css, 'properties');
+        if (fallback) parts.push(`@layer base {\n${fallback}\n}`);
         return result(parts.join('\n\n'));
     } catch (e) {
         return result('', 'error');
@@ -222,10 +232,11 @@ export async function compileUtilities(options = {}) {
  * compileUtilities plus a report of the Tailwind pass.
  * `tailwind.ran`: the engine compiled `candidates`; `emitted`: it produced utility rules;
  * `reason` when it did not run; `version`: engine package version (injected engines: their `version`, else null);
- * `input`: the engine's entry CSS; `candidates`: sorted tokens shown to the engine.
+ * `seed`: tailwindSeed(version, input, TAILWIND_ENGINE_HASH) when the pass ran with a known version, else null;
+ * `input`: the engine's entry CSS; `candidates`: sorted tokens shown to the engine. Stamp it with utilitiesStamp.
  *
  * @param {Parameters<typeof compileUtilities>[0]} options
- * @returns {Promise<{css: string, tailwind: {ran: boolean, emitted: boolean, reason: null|'no-classes'|'unavailable'|'error', version: string|null, input: string, candidates: string[]}}>}
+ * @returns {Promise<{css: string, tailwind: {ran: boolean, emitted: boolean, reason: null|'no-classes'|'unavailable'|'error', version: string|null, seed: string|null, input: string, candidates: string[]}}>}
  */
 export async function bakeUtilities({ classes = [], themeCss = '', baseCss = '', safelist = [], tailwind = null } = {}) {
     const compiler = createNodeCompiler();
@@ -247,12 +258,55 @@ export async function bakeUtilities({ classes = [], themeCss = '', baseCss = '',
     return { css: body ? `@layer base, components, utilities;\n\n${body}` : '', tailwind: report };
 }
 
+const escapeAttribute = (s) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const AUTHOR_TAILWIND_BLOCK_RE = /<style\b[^>]*\btype\s*=\s*["']?text\/tailwindcss/i;
+
+/**
+ * The Tailwind engine-skip stamp for a baked utilities sheet, or null when the sheet must not be stamped
+ * (the Tailwind pass did not run, no engine version, or any `sources` HTML has an author `text/tailwindcss` block).
+ *
+ * Write `linkAttributes` on the sheet's `<link rel="stylesheet" data-mnfst-utilities>` and `tokensHtml`
+ * right after that link, both before the loader `<script>`:
+ *   <link rel="stylesheet" href="…" data-mnfst-utilities data-tailwind-stamp="4.3.1:1a2b3c" data-tailwind-mode="shadow">
+ *   <script type="application/json" data-tailwind-tokens>{"seed":"4.3.1:1a2b3c","tokens":["flex",…]}</script>
+ * `mode`: 'shadow' (engine loads as today; the page records whether it could have skipped) or 'skip'.
+ * The loader skips the engine only when the seed equals its own, the tokens' seed matches, and the sheet is readable.
+ *
+ * @param {Awaited<ReturnType<typeof bakeUtilities>>} result
+ * @param {{mode?: 'shadow'|'skip', sources?: string[]}} [options]
+ * @returns {{seed: string, mode: 'shadow'|'skip', tokens: string[], attributes: Record<string, string>, linkAttributes: string, tokensHtml: string} | null}
+ */
+export function utilitiesStamp(result, { mode = 'shadow', sources = [] } = {}) {
+    if (mode !== 'shadow' && mode !== 'skip') throw new TypeError(`utilitiesStamp: mode must be "shadow" or "skip", got ${JSON.stringify(mode)}`);
+    const report = result && result.tailwind;
+    if (!report || !report.ran || !report.seed || report.seed !== tailwindSeed(report.version, report.input, TAILWIND_ENGINE_HASH)) return null;
+    if (sources.some(html => typeof html === 'string' && AUTHOR_TAILWIND_BLOCK_RE.test(html))) return null;
+    const seed = report.seed;
+    const tokens = report.candidates.slice();
+    const json = JSON.stringify({ seed, tokens }).replace(/</g, '\\u003c');
+    const attributes = { 'data-tailwind-stamp': seed, 'data-tailwind-mode': mode };
+    return {
+        seed,
+        mode,
+        tokens,
+        attributes,
+        linkAttributes: Object.entries(attributes).map(([k, v]) => `${k}="${escapeAttribute(v)}"`).join(' '),
+        tokensHtml: `<script type="application/json" data-tailwind-tokens>${json}</script>`
+    };
+}
+
+export { tailwindSeed, TAILWIND_ENGINE_INPUT, TAILWIND_ENGINE_HASH };
+
+// Markdown containers (`::: frame col gap-4 icon="…" "name"`): the markdown module writes these classes on an <aside>
+const MARKDOWN_CONTAINER_RE = /^:::[ \t]*([^\n]*)$/gm;
+
 // `class:token=` per-class conditional bindings; extractClassesFromHTML covers `:class`
 const CLASS_TOKEN_BINDING_RE = /\bclass:([a-zA-Z0-9_-]+(?:\\.[a-zA-Z0-9_-]+)*)\s*=/g;
 
 /**
  * Scan HTML for utility class tokens using the same extraction the browser
- * plugin uses (extractClassesFromHTML, which reads `:class` literals), plus `class:` tokens.
+ * plugin uses (extractClassesFromHTML, which reads `:class` literals), plus `class:` tokens
+ * and markdown container classes (`::: frame col gap-4`).
  * Skips `x-`/`$` tokens. Returns a sorted, deduplicated array.
  *
  * `safelist` (manifest.json's `utilities.safelist`) is folded into the result
@@ -273,6 +327,13 @@ export function scanClasses(html, { safelist = [] } = {}) {
     while ((m = CLASS_TOKEN_BINDING_RE.exec(html)) !== null) {
         const cls = m[1].replace(/\\(.)/g, '$1');
         if (cls && !cls.startsWith('x-') && !cls.startsWith('$')) set.add(cls);
+    }
+
+    MARKDOWN_CONTAINER_RE.lastIndex = 0;
+    while ((m = MARKDOWN_CONTAINER_RE.exec(html)) !== null) {
+        const tokens = m[1].replace(/\s*icon="[^"]+"\s*/, ' ').replace(/\s*"[^"]+"\s*/, ' ').split(/\s+/).filter(Boolean);
+        const frame = tokens.includes('frame');
+        for (const cls of tokens) if (!cls.startsWith('x-') && !cls.startsWith('$') && !(frame && cls === 'demo')) set.add(cls);
     }
 
     return Array.from(set).sort();
