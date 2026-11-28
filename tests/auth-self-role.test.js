@@ -17,7 +17,7 @@ async function start(roles) {
                 case 'teams.list': return { teams: [{ $id: 't1', name: 'One' }], total: 1 }
                 case 'teams.listMemberships': return { memberships: [{ $id: 'm-me', userId: 'uA', roles, confirm: true }, { $id: 'm-b', userId: 'uB', roles: ['viewer'], confirm: true }], total: 2 }
                 case 'teams.getPrefs': return { roles: {} }
-                case 'teams.getMembership': return arg.membershipId === 'm-me-t2' ? { $id: 'm-me-t2', teamId: 't2', userId: 'uA', roles: ['viewer'] } : { $id: arg.membershipId, teamId: arg.teamId, userId: 'uB', roles: ['viewer'] }
+                case 'teams.getMembership': if (arg.membershipId === 'm-gone') { const e = new Error('Membership not found'); e.code = 404; return e } return arg.membershipId === 'm-me-t2' ? { $id: 'm-me-t2', teamId: 't2', userId: 'uA', roles: ['viewer'] } : { $id: arg.membershipId, teamId: arg.teamId, userId: 'uB', roles: ['viewer'] }
                 case 'teams.updateMembership': return { membership: { $id: arg.membershipId, userId: arg.membershipId === 'm-me' ? 'uA' : 'uB', roles: arg.roles } }
             }
         },
@@ -68,5 +68,11 @@ describe('own membership', () => {
         expect(result.error).toBe('You do not have permission to change your own roles')
         expect(sent(page)).toEqual([])
         expect((await page.store.updateMembership('t2', 'm-me-t2', [])).success).toBe(true)
+    })
+
+    it('a membership in another team that cannot be looked up is refused', async () => {
+        const page = await start(['admin', 'owner'])
+        expect((await page.store.updateMembership('t2', 'm-gone', ['Admin'])).success).toBe(false)
+        expect(sent(page)).toEqual([])
     })
 })

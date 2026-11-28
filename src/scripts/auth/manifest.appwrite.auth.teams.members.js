@@ -359,7 +359,9 @@ function initializeTeamsMembers() {
                         try {
                             const found = await this._appwrite.teams.getMembership({ teamId, membershipId });
                             if (found?.userId === this.user.$id) own = found;
-                        } catch (e) {}
+                        } catch (e) {
+                            return { success: false, error: 'You do not have permission to update member roles' };
+                        }
                     }
                 }
 
